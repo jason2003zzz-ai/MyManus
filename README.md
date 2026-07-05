@@ -13,11 +13,13 @@ MyManus is a web-first agent based on OpenManus. It keeps the single-agent ReAct
 - Custom Skills loaded from `workspace/skills/*/SKILL.md`.
 - Recent task history, continuation context, stop button, and downloadable artifacts.
 
-## Demos
+## 演示
 
-- [Luogu demo](demos/luogu-demo.mp4)
-- [Doubao demo](demos/doubao-demo.mp4)
-- [Honor of Kings demo](demos/honor-of-kings-demo.mp4)
+- [洛谷演示](https://jason2003zzz-ai.github.io/MyManus/demos/#luogu)
+- [豆包演示](https://jason2003zzz-ai.github.io/MyManus/demos/#doubao)
+- [王者荣耀演示](https://jason2003zzz-ai.github.io/MyManus/demos/#honor-of-kings)
+
+The demo videos are served through GitHub Pages so they can be opened and played directly in a browser.
 
 ## Requirements
 
