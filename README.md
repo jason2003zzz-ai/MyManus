@@ -15,15 +15,15 @@ MyManus is a web-first agent based on OpenManus. It keeps the single-agent ReAct
 
 ## 演示
 
-### 洛谷演示
+### 洛谷全自动刷题任务
 
 https://github.com/user-attachments/assets/f3bbc40f-6ffc-4541-9843-c35c8fbf1fab
 
-### 豆包演示
+### 豆包对话并总结成Word任务
 
 https://github.com/user-attachments/assets/00a5a116-03b0-414b-8ef9-e9753ceb47e0
 
-### 王者荣耀演示
+### B站评论任务
 
 https://github.com/user-attachments/assets/f976d09f-e4ff-4b21-831a-80ff4df2d2a1
 
