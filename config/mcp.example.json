@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@0.0.77",
+        "--extension",
+        "--caps",
+        "vision",
+        "--executable-path",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "--output-dir",
+        "workspace/playwright-mcp"
+      ],
+      "env": {
+        "PLAYWRIGHT_MCP_EXTENSION_TOKEN": "YOUR_PLAYWRIGHT_MCP_EXTENSION_TOKEN"
+      }
+    },
+    "stepsearch": {
+      "type": "streamableHttp",
+      "url": "https://api.stepfun.com/step_plan/v1/mcp/web_search/mcp",
+      "headers": {
+        "Authorization": "Bearer ${STEPFUN_API_KEY}"
+      }
+    }
+  }
+}

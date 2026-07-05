@@ -1,0 +1,38 @@
+# MyManus configuration template.
+# Copy this file to config/config.toml and fill in your own API key.
+
+[llm]
+model = "step-3.7-flash"
+base_url = "https://api.stepfun.com/step_plan/v1"
+api_key = "YOUR_STEPFUN_API_KEY"
+max_tokens = 65536
+temperature = 0.0
+reasoning_effort = "high"
+
+[llm.vision]
+model = "step-3.7-flash"
+base_url = "https://api.stepfun.com/step_plan/v1"
+api_key = "YOUR_STEPFUN_API_KEY"
+max_tokens = 65536
+temperature = 0.0
+reasoning_effort = "high"
+
+[mcp]
+server_reference = "app.mcp.server"
+
+# Optional browser settings used by older local tools. Playwright MCP is configured
+# in config/mcp.json.
+# [browser]
+# headless = false
+# disable_security = true
+# chrome_instance_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+# Optional sandbox settings.
+# [sandbox]
+# use_sandbox = false
+# image = "python:3.12-slim"
+# work_dir = "/workspace"
+# memory_limit = "1g"
+# cpu_limit = 2.0
+# timeout = 300
+# network_enabled = true

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MyManus Web</title>
+    <link rel="stylesheet" href="/static/styles.css?v=43" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <img src="/assets/logo.jpg?v=mymanus" alt="" />
+          <div>
+            <h1>MyManus</h1>
+            <p id="modelLine">正在读取配置</p>
+          </div>
+        </div>
+        <div class="topbar-actions">
+          <span id="connectionBadge" class="badge neutral">待命</span>
+          <a class="icon-link" href="/api/status" target="_blank" aria-label="API 状态">
+            <span aria-hidden="true">⌘</span>
+          </a>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="panel prompt-panel">
+          <button id="newConversationButton" class="new-chat-button" type="button" aria-label="新对话">
+            <span aria-hidden="true">＋</span>
+            <span>新对话</span>
+          </button>
+
+          <form id="runForm">
+            <label for="promptInput">任务</label>
+            <textarea id="promptInput" name="prompt" autocomplete="off" spellcheck="false" placeholder="输入任务"></textarea>
+
+            <section id="continuePanel" class="continue-panel" hidden>
+              <div>
+                <strong>当前对话</strong>
+                <span id="continueLabel"></span>
+              </div>
+            </section>
+
+            <section class="attachments-panel">
+              <div class="attachments-header">
+                <h2>附件</h2>
+                <span id="attachmentsSummary">未上传</span>
+              </div>
+              <label class="attachment-picker-button" for="attachmentInput">
+                <span>上传文件</span>
+                <span>docx / pdf / xlsx / png / jpg</span>
+              </label>
+              <input
+                id="attachmentInput"
+                type="file"
+                accept=".docx,.pdf,.xlsx,.png,.jpg,.jpeg"
+                multiple
+                hidden
+              />
+              <div id="attachmentsList" class="attachments-list"></div>
+            </section>
+
+            <section class="skills-panel">
+              <div class="skills-header">
+                <h2>Skills</h2>
+                <span id="skillsSummary">未选择</span>
+              </div>
+              <button id="openSkillsButton" class="skill-picker-button" type="button">
+                <span>选择 Skills</span>
+                <span id="skillsSelectedLine">当前未启用</span>
+              </button>
+            </section>
+
+            <div class="button-row">
+              <button id="runButton" class="primary-button" type="submit">
+                <span aria-hidden="true">▶</span>
+                <span>运行</span>
+              </button>
+              <button id="cancelButton" class="ghost-button" type="button" disabled>
+                <span aria-hidden="true">■</span>
+                <span>停止</span>
+              </button>
+            </div>
+          </form>
+
+          <section class="run-history recent-panel">
+            <div class="recent-header">
+              <h2>最近任务</h2>
+              <button id="clearRunsButton" class="clear-runs-button" type="button">全部删除</button>
+            </div>
+            <div id="runsList" class="runs-list"></div>
+          </section>
+        </aside>
+
+        <div
+          class="col-resizer"
+          data-resize="prompt"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整任务区域宽度"
+          tabindex="0"
+        ></div>
+
+        <section class="panel summary-panel">
+          <h2>对话结果</h2>
+          <div id="resultBox" class="result-box">-</div>
+        </section>
+
+        <div
+          class="col-resizer"
+          data-resize="run"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整运行区域宽度"
+          tabindex="0"
+        ></div>
+
+        <aside class="panel run-panel">
+          <div class="run-header">
+            <div>
+              <h2>任务过程</h2>
+              <p id="runMeta">尚未开始</p>
+            </div>
+            <button id="clearButton" class="icon-button" type="button" aria-label="清空">
+              <span aria-hidden="true">⌫</span>
+            </button>
+          </div>
+          <section class="event-section">
+            <div class="stream-title">
+              <h2>运行过程</h2>
+            </div>
+            <div id="eventStream" class="event-stream" aria-live="polite"></div>
+          </section>
+        </aside>
+      </main>
+
+      <div id="skillsDialog" class="modal-backdrop" hidden>
+        <section
+          class="skills-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="skillsDialogTitle"
+        >
+          <header class="skills-dialog-header">
+            <div>
+              <h2 id="skillsDialogTitle">Skills</h2>
+              <p id="skillsDialogMeta">选择本轮任务要加载的 Skills</p>
+            </div>
+            <div class="skills-dialog-actions">
+              <button id="newSkillButton" class="mini-button" type="button">新增</button>
+              <button id="closeSkillsDialogButton" class="icon-button" type="button" aria-label="关闭 Skills">
+                <span aria-hidden="true">×</span>
+              </button>
+            </div>
+          </header>
+          <div class="skills-dialog-body">
+            <div class="skills-dialog-list-shell">
+              <div id="skillsList" class="skills-list"></div>
+            </div>
+            <section id="skillEditor" class="skill-editor" hidden>
+              <label for="skillNameInput">名称</label>
+              <input id="skillNameInput" type="text" autocomplete="off" />
+              <label for="skillContentInput">SKILL.md</label>
+              <textarea id="skillContentInput" spellcheck="false"></textarea>
+              <div class="skill-editor-actions">
+                <button id="saveSkillButton" class="primary-button" type="button">保存</button>
+                <button id="deleteSkillButton" class="ghost-button danger-button" type="button">删除</button>
+                <button id="cancelSkillButton" class="ghost-button" type="button">取消</button>
+              </div>
+            </section>
+          </div>
+          <footer class="skills-dialog-footer">
+            <button id="skillsDoneButton" class="primary-button" type="button">完成</button>
+          </footer>
+        </section>
+      </div>
+    </div>
+
+    <script src="/static/app.js?v=46" type="module"></script>
+  </body>
+</html>
