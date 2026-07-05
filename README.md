@@ -17,21 +17,15 @@ MyManus is a web-first agent based on OpenManus. It keeps the single-agent ReAct
 
 ### 洛谷演示
 
-[![洛谷演示](demos/luogu-demo.gif)](https://jason2003zzz-ai.github.io/MyManus/demos/luogu-demo.mp4)
-
-[打开 MP4](https://jason2003zzz-ai.github.io/MyManus/demos/luogu-demo.mp4)
+https://github.com/user-attachments/assets/f3bbc40f-6ffc-4541-9843-c35c8fbf1fab
 
 ### 豆包演示
 
-[![豆包演示](demos/doubao-demo.gif)](https://jason2003zzz-ai.github.io/MyManus/demos/doubao-demo.mp4)
-
-[打开 MP4](https://jason2003zzz-ai.github.io/MyManus/demos/doubao-demo.mp4)
+https://github.com/user-attachments/assets/00a5a116-03b0-414b-8ef9-e9753ceb47e0
 
 ### 王者荣耀演示
 
-[![王者荣耀演示](demos/honor-of-kings-demo.gif)](https://jason2003zzz-ai.github.io/MyManus/demos/honor-of-kings-demo.mp4)
-
-[打开 MP4](https://jason2003zzz-ai.github.io/MyManus/demos/honor-of-kings-demo.mp4)
+https://github.com/user-attachments/assets/f976d09f-e4ff-4b21-831a-80ff4df2d2a1
 
 备用播放页：[打开全部演示](https://jason2003zzz-ai.github.io/MyManus/demos/)
 
