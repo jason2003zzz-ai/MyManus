@@ -15,11 +15,25 @@ MyManus is a web-first agent based on OpenManus. It keeps the single-agent ReAct
 
 ## 演示
 
-- [洛谷演示](https://jason2003zzz-ai.github.io/MyManus/demos/#luogu)
-- [豆包演示](https://jason2003zzz-ai.github.io/MyManus/demos/#doubao)
-- [王者荣耀演示](https://jason2003zzz-ai.github.io/MyManus/demos/#honor-of-kings)
+### 洛谷演示
 
-The demo videos are served through GitHub Pages so they can be opened and played directly in a browser.
+[![洛谷演示](demos/luogu-demo.gif)](https://jason2003zzz-ai.github.io/MyManus/demos/luogu-demo.mp4)
+
+[打开 MP4](https://jason2003zzz-ai.github.io/MyManus/demos/luogu-demo.mp4)
+
+### 豆包演示
+
+[![豆包演示](demos/doubao-demo.gif)](https://jason2003zzz-ai.github.io/MyManus/demos/doubao-demo.mp4)
+
+[打开 MP4](https://jason2003zzz-ai.github.io/MyManus/demos/doubao-demo.mp4)
+
+### 王者荣耀演示
+
+[![王者荣耀演示](demos/honor-of-kings-demo.gif)](https://jason2003zzz-ai.github.io/MyManus/demos/honor-of-kings-demo.mp4)
+
+[打开 MP4](https://jason2003zzz-ai.github.io/MyManus/demos/honor-of-kings-demo.mp4)
+
+备用播放页：[打开全部演示](https://jason2003zzz-ai.github.io/MyManus/demos/)
 
 ## Requirements
 
