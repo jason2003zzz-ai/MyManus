@@ -23,10 +23,6 @@ https://github.com/user-attachments/assets/f3bbc40f-6ffc-4541-9843-c35c8fbf1fab
 
 https://github.com/user-attachments/assets/00a5a116-03b0-414b-8ef9-e9753ceb47e0
 
-### B站评论任务
-
-https://github.com/user-attachments/assets/f976d09f-e4ff-4b21-831a-80ff4df2d2a1
-
 备用播放页：[打开全部演示](https://jason2003zzz-ai.github.io/MyManus/demos/)
 
 ## Requirements
