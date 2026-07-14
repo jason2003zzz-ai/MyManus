@@ -23,7 +23,7 @@ from app.tool.terminate import Terminate
 class MCPServer:
     """MCP Server implementation with tool registration and management."""
 
-    def __init__(self, name: str = "mymanus"):
+    def __init__(self, name: str = "openmanus"):
         self.server = FastMCP(name)
         self.tools: Dict[str, BaseTool] = {}
 
@@ -154,13 +154,13 @@ class MCPServer:
         atexit.register(lambda: asyncio.run(self.cleanup()))
 
         # Start server (with same logging as original)
-        logger.info(f"Starting MyManus server ({transport} mode)")
+        logger.info(f"Starting OpenManus server ({transport} mode)")
         self.server.run(transport=transport)
 
 
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="MyManus MCP Server")
+    parser = argparse.ArgumentParser(description="OpenManus MCP Server")
     parser.add_argument(
         "--transport",
         choices=["stdio"],

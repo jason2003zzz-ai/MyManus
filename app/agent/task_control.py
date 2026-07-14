@@ -79,14 +79,34 @@ JUDGING_FAILURE_MARKERS = (
 VALID_TERMINATION_STATUSES = {"success", "failure"}
 
 RETRIEVAL_INTENT_RE = re.compile(
-    r"搜索|查询|查找|检索|浏览|访问|打开(?:网页|网站|页面)|"
+    r"搜索|搜一下|搜一搜|查询|查找|检索|浏览|访问|打开(?:网页|网站|页面)|"
     r"看一下|查看|读取|检查|审查|最新|当前|"
     r"search|look\s*up|find|browse|research",
     re.IGNORECASE,
 )
+NEGATIVE_RESEARCH_CONCLUSION_RE = re.compile(
+    r"未(?:能)?(?:搜索|查询|查找|检索|发现|找到)|"
+    r"没(?:有)?(?:搜索|查询|查找|检索|发现|找到)|"
+    r"(?:暂|仍)?无(?:法)?(?:搜索|查询|查找|检索|发现|找到)|"
+    r"暂无(?:公开|相关|可用|完整)?(?:信息|数据|资料|记录|结果|页面|名单|统计)|"
+    r"公开渠道.{0,24}(?:没有|未找到|暂无|不存在)|"
+    r"不存在(?:公开|相关|可用|完整)?(?:信息|数据|资料|记录|结果|页面|名单|统计)|"
+    r"(?:could\s+not|couldn't|did\s+not|didn't|unable\s+to)\s+(?:find|locate)|"
+    r"no\s+(?:public|relevant|available|complete)?\s*"
+    r"(?:information|data|record|result|page|list|statistics?)\s+(?:was|were|could\s+be\s+)?found|"
+    r"not\s+publicly\s+available",
+    re.IGNORECASE,
+)
+SEARCH_ENGINE_URL_RE = re.compile(
+    r"https?://(?:[^/]+\.)?(?:google\.|bing\.com|baidu\.com|duckduckgo\.com|"
+    r"search\.yahoo\.|so\.com|sogou\.com)",
+    re.IGNORECASE,
+)
 ACTION_INTENT_RE = re.compile(
     r"发送|发邮件|发布|评论|回复|提交|上传|登录|注册|"
-    r"购买|下单|删除|点赞|关注|填写|send|publish|post|"
+    r"购买|下单|删除|点赞|填写|"
+    r"关注(?:一下)?(?:这个|该|目标)?(?:账号|用户|公众号|博主|作者|店铺|频道)|"
+    r"点赞.{0,12}关注|send|publish|post|"
     r"submit|upload|delete|purchase|place\s+(?:an\s+)?order",
     re.IGNORECASE,
 )
@@ -140,6 +160,14 @@ COMMIT_ARGUMENT_MARKERS = (
     "delete",
     "confirm",
 )
+
+
+def is_retrieval_objective(value: str) -> bool:
+    return bool(RETRIEVAL_INTENT_RE.search(value or ""))
+
+
+def is_negative_research_conclusion(value: str) -> bool:
+    return bool(NEGATIVE_RESEARCH_CONCLUSION_RE.search(value or ""))
 
 
 class ToolAttempt(BaseModel):
@@ -248,6 +276,22 @@ class TaskController(BaseModel):
             classification_text,
             flags=re.IGNORECASE,
         )
+        classification_text = re.sub(
+            r"(?:已|已经|此前|前序)?"
+            r"(?:搜索|查询|查找|检索|浏览|访问|查看|读取|检查|审查)"
+            r"(?:到|得到|获得|过|完成)?的(?=信息|数据|资料|内容|结果|页面|记录)",
+            " ",
+            classification_text,
+            flags=re.IGNORECASE,
+        )
+        classification_text = re.sub(
+            r"(?:官方|网站|页面|平台|用户|作者|此前|已经|已|曾)?"
+            r"(?:发布|评论|提交|登录)"
+            r"(?:的|记录|内容|页面|状态|信息|结果|历史)",
+            " ",
+            classification_text,
+            flags=re.IGNORECASE,
+        )
 
         if RETRIEVAL_INTENT_RE.search(classification_text):
             required.append("retrieval")
@@ -280,7 +324,7 @@ class TaskController(BaseModel):
         targets: list[str] = []
         patterns = (
             r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
-            r"https?://[^\s\]\[()<>\"'，。；、,;!?！？]+",
+            r"https?://[^\s\]\[()（）【】《》「」『』<>\"'，。；：、,;:!?！？]+",
             r"\bP\d{3,6}\b",
             r"(?:[\w.-]+\.(?:docx|xlsx|pdf|csv|json|md|txt|py|cpp|java))\b",
         )
@@ -342,6 +386,7 @@ class TaskController(BaseModel):
                 evidence_ids=arguments.get("evidence_ids"),
                 explicit=True,
                 reason=arguments.get("reason", ""),
+                final_answer=final_answer,
             )
             return None if allowed else rejection
 
@@ -478,7 +523,7 @@ class TaskController(BaseModel):
         self.last_evidence_receipt = ""
 
         if not failed:
-            kinds = self._classify_evidence(tool_name, arguments)
+            kinds = self._classify_evidence(tool_name, arguments, result)
             if kinds:
                 self.evidence_counter += 1
                 receipt = EvidenceReceipt(
@@ -498,6 +543,16 @@ class TaskController(BaseModel):
                     "Reference this receipt in terminate.evidence_ids only when it "
                     "directly proves a completion criterion."
                 )
+
+        if not failed and self._is_search_discovery_tool(tool_name):
+            self.last_recovery_directive = (
+                "RESEARCH DIRECTIVE: Search results and snippets are discovery "
+                "evidence, not proof that the requested fact exists or does not "
+                "exist. Open or fetch the strongest first-party source, inspect its "
+                "relevant page/navigation/site search, and verify the original page "
+                "before answering. If you may conclude that nothing was found, also "
+                "try an alternate query and cite direct-page evidence."
+            )
 
         if tool_name.startswith(BROWSER_TOOL_PREFIX):
             self.browser_failure_streak = (
@@ -520,7 +575,28 @@ class TaskController(BaseModel):
             return directive
         return None
 
-    def _classify_evidence(self, tool_name: str, arguments: Any) -> set[str]:
+    @staticmethod
+    def _is_search_discovery_tool(tool_name: str) -> bool:
+        name = (tool_name or "").lower()
+        return "web_search" in name or name.endswith(("_search", "search"))
+
+    @staticmethod
+    def _has_direct_page_content(tool_name: str, result: str) -> bool:
+        name = (tool_name or "").lower()
+        if any(marker in name for marker in ("web_fetch", "fetch_url", "crawl")):
+            return True
+        if not name.endswith(("snapshot", "evaluate")):
+            return False
+        urls = re.findall(
+            r"(?:Page URL|url)\s*:\s*(https?://[^\s'\"),]+)",
+            result or "",
+            flags=re.IGNORECASE,
+        )
+        return any(not SEARCH_ENGINE_URL_RE.search(url) for url in urls)
+
+    def _classify_evidence(
+        self, tool_name: str, arguments: Any, result: str = ""
+    ) -> set[str]:
         name = tool_name.lower()
         arguments_text = self._normalized_arguments(arguments).lower()
         kinds: set[str] = set()
@@ -529,6 +605,8 @@ class TaskController(BaseModel):
         is_read = any(marker in name for marker in READ_TOOL_MARKERS)
         if is_read:
             kinds.add("retrieval")
+        if self._has_direct_page_content(tool_name, result):
+            kinds.update(("retrieval", "source_read"))
 
         if name in {"python_execute", "bash", "sandbox_shell"} or any(
             marker in name for marker in ("execute", "run_tests", "pytest", "compile")
@@ -722,6 +800,7 @@ class TaskController(BaseModel):
         *,
         explicit: bool = True,
         reason: str = "",
+        final_answer: str = "",
     ) -> tuple[bool, str]:
         if status not in VALID_TERMINATION_STATUSES:
             return (
@@ -760,7 +839,72 @@ class TaskController(BaseModel):
             if not allowed:
                 return allowed, rejection
 
-        return self._validate_contract_evidence(evidence_ids, explicit=explicit)
+        allowed, rejection = self._validate_contract_evidence(
+            evidence_ids, explicit=explicit
+        )
+        if not allowed:
+            return allowed, rejection
+        if (
+            "retrieval" in self.completion_contract.required_evidence_kinds
+            and is_negative_research_conclusion(final_answer)
+            and self._has_web_research_evidence(evidence_ids)
+        ):
+            return self._validate_negative_research_evidence(evidence_ids)
+        return True, ""
+
+    def _has_web_research_evidence(self, evidence_ids: Any) -> bool:
+        selected_ids = {
+            item.strip()
+            for item in (evidence_ids or [])
+            if isinstance(item, str) and item.strip()
+        }
+        return any(
+            receipt.receipt_id in selected_ids
+            and (
+                receipt.tool_name.startswith("mcp_stepsearch_")
+                or receipt.tool_name.startswith(BROWSER_TOOL_PREFIX)
+                or "web_search" in receipt.tool_name.lower()
+                or "web_fetch" in receipt.tool_name.lower()
+                or "crawl" in receipt.tool_name.lower()
+            )
+            for receipt in self.evidence_receipts
+        )
+
+    def _validate_negative_research_evidence(
+        self, evidence_ids: Any
+    ) -> tuple[bool, str]:
+        normalized_ids = {
+            item.strip()
+            for item in (evidence_ids or [])
+            if isinstance(item, str) and item.strip()
+        }
+        selected = [
+            receipt
+            for receipt in self.evidence_receipts
+            if receipt.receipt_id in normalized_ids
+        ]
+        source_reads = [
+            receipt for receipt in selected if "source_read" in receipt.kinds
+        ]
+        retrieval_steps = [
+            receipt for receipt in selected if "retrieval" in receipt.kinds
+        ]
+        if not source_reads:
+            return (
+                False,
+                "A negative research conclusion cannot be supported by search "
+                "results or snippets alone. Open or fetch the strongest first-party "
+                "source, inspect the relevant original page/navigation/site search, "
+                "then cite a `source_read` evidence receipt.",
+            )
+        if len(retrieval_steps) < 2:
+            return (
+                False,
+                "A negative research conclusion needs at least two retrieval steps, "
+                "including a direct source read. Try an alternate query or inspect "
+                "another relevant page before concluding that nothing was found.",
+            )
+        return True, ""
 
     def _validate_luogu_completion(self) -> tuple[bool, str]:
         if self.luogu_accepted_seen and self.submission_action_seen:

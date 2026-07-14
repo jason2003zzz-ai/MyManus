@@ -29,6 +29,42 @@ def test_colloquial_luogu_submit_intent_is_detected():
     assert controller.expected_problem_id == "P17036"
 
 
+def test_research_focus_is_not_misclassified_as_follow_action():
+    controller = TaskController()
+    controller.initialize("查询公开资料，重点关注实验室官网和学院公告")
+
+    assert controller.completion_contract.required_evidence_kinds == ["retrieval"]
+
+    action_controller = TaskController()
+    action_controller.initialize("请关注这个账号，并确认关注成功")
+    assert action_controller.completion_contract.required_evidence_kinds == [
+        "action",
+        "verification",
+    ]
+
+
+def test_research_url_target_excludes_chinese_closing_punctuation():
+    controller = TaskController()
+    controller.initialize(
+        "请核实实验室官网（https://lab.example.edu/alumnus），并整理公开名单。"
+    )
+
+    assert controller.completion_contract.required_targets == [
+        "https://lab.example.edu/alumnus"
+    ]
+
+
+def test_prior_step_references_do_not_add_unreachable_worker_requirements():
+    controller = TaskController()
+    controller.initialize("对搜索到的信息进行去重、验证和结构化整理")
+
+    assert controller.completion_contract.required_evidence_kinds == ["execution"]
+
+    published_data = TaskController()
+    published_data.initialize("整理官网已经发布的信息并生成报告")
+    assert published_data.completion_contract.required_evidence_kinds == ["artifact"]
+
+
 @pytest.mark.asyncio
 async def test_agent_uses_current_task_objective_in_continued_conversation(monkeypatch):
     async def fake_base_run(self, request=None):
@@ -726,6 +762,83 @@ def test_external_task_cannot_fail_before_any_attempt():
         explicit=True,
         reason="Gmail authentication failed.",
     )
+    assert allowed
+    assert reason == ""
+
+
+def test_negative_research_conclusion_requires_direct_source_read():
+    controller = TaskController()
+    controller.initialize("搜索某大学实验室2026届毕业去向")
+    controller.record_tool_result(
+        "mcp_stepsearch_web_search",
+        {"query": "某大学实验室 2026届 毕业去向"},
+        '{"results":[{"url":"https://lab.example.edu/"}]}',
+    )
+    controller.record_tool_result(
+        "mcp_stepsearch_web_search",
+        {"query": "site:lab.example.edu 2026 届 校友"},
+        '{"results":[{"url":"https://lab.example.edu/"}]}',
+    )
+
+    allowed, reason = controller.validate_termination(
+        "success",
+        evidence_ids=["E1", "E2"],
+        explicit=True,
+        final_answer="目前公开渠道未找到相关毕业去向。",
+    )
+
+    assert not allowed
+    assert "search results or snippets alone" in reason
+
+    controller.record_tool_result(
+        "mcp_playwright_browser_snapshot",
+        {},
+        "### Page\n- Page URL: https://lab.example.edu/alumni\n- heading: 校友",
+    )
+    assert "source_read" in controller.evidence_receipts[-1].kinds
+
+    allowed, reason = controller.validate_termination(
+        "success",
+        evidence_ids=["E1", "E2", "E3"],
+        explicit=True,
+        final_answer="目前公开渠道未找到相关毕业去向。",
+    )
+    assert allowed
+    assert reason == ""
+
+
+def test_search_result_injects_primary_source_research_directive():
+    controller = TaskController()
+    controller.initialize("查询某项公开资料")
+
+    controller.record_tool_result(
+        "mcp_stepsearch_web_search",
+        {"query": "公开资料"},
+        '{"results":[{"url":"https://official.example.org/"}]}',
+    )
+
+    assert "Search results and snippets are discovery" in (
+        controller.last_recovery_directive
+    )
+    assert "first-party source" in controller.last_recovery_directive
+
+
+def test_negative_mailbox_search_does_not_require_web_source_read():
+    controller = TaskController()
+    controller.initialize("搜索 Gmail 中导师发来的邮件")
+    controller.record_tool_result(
+        "mcp_gmail_search_emails",
+        {"query": "from:advisor@example.edu"},
+        "Search completed successfully with 0 messages.",
+    )
+
+    allowed, reason = controller.validate_termination(
+        "success",
+        evidence_ids=["E1"],
+        explicit=True,
+        final_answer="没有找到符合条件的邮件。",
+    )
+
     assert allowed
     assert reason == ""
 

@@ -10,7 +10,7 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import quote, urlparse
 
 from fastapi import (
@@ -26,10 +26,17 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from app.agent.data_analysis import DataAnalysis
 from app.agent.manus import Manus
+from app.agent.task_control import (
+    is_negative_research_conclusion,
+    is_retrieval_objective,
+)
 from app.config import PROJECT_ROOT, config
 from app.schema import Message
-from app.web.skill_rag import SkillDocument, retrieve_relevant_skills
+from app.team import ScopedManus, TeamCoordinator, TeamOutcome, TeamRole, TeamTask
+from app.web.memory_rag import MemoryMatch, MemoryRecord, SemanticMemoryStore
+from app.web.skill_matcher import SkillDocument, match_skills
 
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -41,8 +48,8 @@ UPLOAD_METADATA_DIR = UPLOADS_DIR / ".metadata"
 TERMINAL_STATUSES = {"completed", "error", "cancelled", "step_limit"}
 DEFAULT_MAX_STEPS = 80
 MAX_SKILL_CHARS = 12000
-AUTO_SKILL_TOP_K = 3
-AUTO_SKILL_MIN_SCORE = 0.08
+AUTO_SKILL_TOP_K = config.skill_config.top_k
+AUTO_SKILL_MIN_SCORE = config.skill_config.min_score
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_INLINE_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_UPLOADS_PER_RUN = 8
@@ -63,6 +70,27 @@ app = FastAPI(title="MyManus Web", version="0.1.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 if ASSETS_DIR.exists():
     app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+
+
+def workspace_relative_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else config.workspace_root / path
+
+
+MEMORY_STORE = SemanticMemoryStore(
+    storage_path=workspace_relative_path(config.memory_config.storage_path),
+    cache_path=workspace_relative_path(config.memory_config.cache_path),
+    provider=config.memory_config.provider,
+    model_name=config.memory_config.model,
+    model_cache_dir=workspace_relative_path(config.memory_config.model_cache_dir),
+    base_url=config.memory_config.base_url,
+    api_key=config.memory_config.api_key,
+    api_key_env=config.memory_config.api_key_env,
+    dimensions=config.memory_config.dimensions,
+    max_records=config.memory_config.max_records,
+    max_content_chars=config.memory_config.max_content_chars,
+    fallback_to_sparse=config.memory_config.fallback_to_sparse,
+)
 
 
 def looks_like_raw_execution_log(value: Optional[str]) -> bool:
@@ -86,6 +114,8 @@ def display_answer(value: Optional[str], result: Optional[str] = None) -> Option
 @app.on_event("startup")
 async def load_saved_runs() -> None:
     load_runs()
+    if config.memory_config.enabled:
+        await asyncio.to_thread(backfill_memory_from_runs)
 
 
 class RunRequest(BaseModel):
@@ -93,7 +123,7 @@ class RunRequest(BaseModel):
     parent_run_id: Optional[str] = None
     skill_ids: list[str] = Field(default_factory=list)
     attachment_ids: list[str] = Field(default_factory=list)
-    mode: str = Field(default="single")
+    mode: Literal["single", "team"] = Field(default="single")
 
 
 class SkillRequest(BaseModel):
@@ -113,6 +143,8 @@ class RunSession:
     mode: str
     created_at: str
     updated_at: str
+    memory_matches: list[dict[str, Any]] = field(default_factory=list)
+    team: Optional[dict[str, Any]] = None
     status: str = "queued"
     result: Optional[str] = None
     answer: Optional[str] = None
@@ -129,10 +161,12 @@ class RunSession:
             "parent_run_id": self.parent_run_id,
             "skill_ids": self.skill_ids,
             "auto_skill_matches": self.auto_skill_matches,
+            "memory_matches": self.memory_matches,
             "attachments": self.attachments,
             "mode": self.mode,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "team": self.team,
             "status": self.status,
             "result": self.result,
             "answer": display_answer(self.answer, self.result),
@@ -617,9 +651,13 @@ def load_runs() -> None:
                 skill_ids=item.get("skill_ids") or [],
                 auto_skill_matches=item.get("auto_skill_matches") or [],
                 attachments=item.get("attachments") or [],
-                mode="single",
+                mode=item.get("mode")
+                if item.get("mode") in {"single", "team"}
+                else "single",
                 created_at=item["created_at"],
                 updated_at=item["updated_at"],
+                memory_matches=item.get("memory_matches") or [],
+                team=item.get("team"),
                 status=item.get("status", "completed"),
                 result=item.get("result"),
                 answer=item.get("answer"),
@@ -658,6 +696,95 @@ def conversation_runs(run_id: str) -> list[RunSession]:
         (run for run in runs.values() if run.id in ids),
         key=lambda item: (item.created_at, item.updated_at),
     )
+
+
+def memory_record_from_run(run: RunSession) -> Optional[MemoryRecord]:
+    if run.status not in {"completed", "step_limit"}:
+        return None
+    answer = str(display_answer(run.answer, run.result) or "").strip()
+    if not answer and not run.result:
+        return None
+    observations = str(run.result or "")
+    web_research_evidence = bool(
+        re.search(
+            r"cmd `(?:mcp_stepsearch_|mcp_playwright_browser_|web_search|web_fetch|crawl)",
+            observations,
+            flags=re.IGNORECASE,
+        )
+    )
+    negative_research = (
+        is_retrieval_objective(run.prompt)
+        and web_research_evidence
+        and is_negative_research_conclusion(answer)
+    )
+    direct_source_read = bool(
+        re.search(
+            r"cmd `(?:mcp_stepsearch_web_fetch|mcp_playwright_browser_"
+            r"(?:snapshot|evaluate))`",
+            observations,
+            flags=re.IGNORECASE,
+        )
+    )
+    retrieval_eligible = not (negative_research and not direct_source_read)
+    quality = "completed" if retrieval_eligible else "unverified_negative"
+    return MemoryRecord(
+        id=run.id,
+        conversation_id=root_run_id(run),
+        run_id=run.id,
+        created_at=run.created_at,
+        task=truncate_context(run.prompt, 4000),
+        answer=truncate_context(answer, 8000),
+        observations=truncate_context(observations, 6000),
+        status=run.status,
+        quality=quality,
+        retrieval_eligible=retrieval_eligible,
+    )
+
+
+def remember_run(run: RunSession) -> None:
+    if not config.memory_config.enabled:
+        return
+    record = memory_record_from_run(run)
+    if record:
+        MEMORY_STORE.upsert(record)
+
+
+def backfill_memory_from_runs() -> None:
+    for run in sorted(runs.values(), key=lambda item: item.created_at):
+        remember_run(run)
+
+
+def serialize_memory_match(match: MemoryMatch) -> dict[str, Any]:
+    record = match.record
+    return {
+        "id": record.id,
+        "conversation_id": record.conversation_id,
+        "run_id": record.run_id,
+        "created_at": record.created_at,
+        "task": record.task,
+        "answer": record.answer,
+        "observations": record.observations,
+        "status": record.status,
+        "quality": record.quality,
+        "score": match.score,
+        "retrieval_method": match.retrieval_method,
+        "embedding_model": match.embedding_model,
+    }
+
+
+async def retrieve_relevant_memories(
+    prompt: str, *, exclude_run_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
+    if not config.memory_config.enabled:
+        return []
+    matches = await asyncio.to_thread(
+        MEMORY_STORE.search,
+        prompt,
+        exclude_run_ids=exclude_run_ids or set(),
+        top_k=config.memory_config.top_k,
+        min_score=config.memory_config.min_score,
+    )
+    return [serialize_memory_match(match) for match in matches]
 
 
 def recent_thread_runs() -> list[RunSession]:
@@ -833,11 +960,12 @@ def serialize_skill_match(match) -> dict[str, Any]:
         "name": match.name,
         "summary": match.summary,
         "score": match.score,
+        "retrieval_method": match.retrieval_method,
         "matched_terms": list(match.matched_terms),
     }
 
 
-def skill_rag_query(prompt: str, attachments: list[dict[str, Any]]) -> str:
+def skill_match_query(prompt: str, attachments: list[dict[str, Any]]) -> str:
     parts = [prompt]
     for record in attachments or []:
         parts.append(
@@ -854,13 +982,14 @@ def skill_rag_query(prompt: str, attachments: list[dict[str, Any]]) -> str:
     return "\n".join(part for part in parts if part)
 
 
-def retrieve_auto_skill_matches(
+async def retrieve_auto_skill_matches(
     prompt: str,
     selected_skill_ids: list[str],
     attachments: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    matches = retrieve_relevant_skills(
-        skill_rag_query(prompt, attachments),
+    matches = await asyncio.to_thread(
+        match_skills,
+        skill_match_query(prompt, attachments),
         list_skill_documents(),
         exclude_ids=set(selected_skill_ids),
         top_k=AUTO_SKILL_TOP_K,
@@ -892,7 +1021,7 @@ def selected_skills_prompt(
         if match.get("id")
     }
     parts = [
-        "以下是本轮任务开始前已加载的自定义 Skills，包含用户手动选择和基于 RAG 自动召回的 Skills。"
+        "以下是本轮任务开始前已加载的自定义 Skills，包含用户手动选择和基于关键词匹配自动加载的 Skills。"
         "请先阅读并遵守这些 SKILL.md，但如果它们与用户本轮明确要求冲突，以用户本轮要求为准。",
     ]
     for index, skill_id in enumerate(valid_ids, start=1):
@@ -901,7 +1030,7 @@ def selected_skills_prompt(
         auto_match = auto_by_id.get(skill_id)
         if auto_match:
             source = (
-                f"RAG 自动召回，score={auto_match.get('score')}, "
+                f"TF-IDF 关键词匹配，score={auto_match.get('score')}, "
                 f"matched_terms={', '.join(auto_match.get('matched_terms') or []) or '-'}"
             )
         else:
@@ -1014,6 +1143,40 @@ def extract_artifact_answer(result: str) -> str:
             continue
         artifacts.append(payload)
 
+    # Executors may create a requested deliverable through Python or another
+    # implementation tool. Ground those claims in files that actually exist inside
+    # the workspace instead of relying on the worker's prose or a specific tool name.
+    known_paths = {str(item.get("path") or "") for item in artifacts}
+    workspace = config.workspace_root.resolve()
+    path_pattern = re.compile(
+        rf"(?:{re.escape(str(workspace))}/|workspace/)"
+        r"[^\n\r\"'`]+?\.(?:docx|xlsx|pdf)",
+        re.IGNORECASE,
+    )
+    for match in path_pattern.finditer(result or ""):
+        raw_path = match.group(0).strip()
+        raw = Path(raw_path)
+        if raw.is_absolute():
+            candidate = raw
+        elif raw.parts and raw.parts[0] == workspace.name:
+            candidate = workspace.joinpath(*raw.parts[1:])
+        else:
+            candidate = workspace / raw
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(workspace)
+        except (OSError, ValueError):
+            continue
+        if not resolved.is_file() or str(resolved) in known_paths:
+            continue
+        artifact_type = {
+            ".docx": "word_document",
+            ".xlsx": "excel_workbook",
+            ".pdf": "pdf_document",
+        }.get(resolved.suffix.lower(), "file")
+        artifacts.append({"type": artifact_type, "path": str(resolved)})
+        known_paths.add(str(resolved))
+
     if not artifacts:
         return ""
 
@@ -1022,6 +1185,7 @@ def extract_artifact_answer(result: str) -> str:
         artifact_type = {
             "excel_workbook": "Excel",
             "word_document": "Word",
+            "pdf_document": "PDF",
         }.get(str(item.get("type") or ""), str(item.get("type") or "文件"))
         file_path = str(item["path"])
         file_url = workspace_file_url(file_path)
@@ -1161,12 +1325,37 @@ def append_exact_text_constraints(prompt: str, source_prompt: str) -> str:
     )
 
 
-def attach_selected_skills(run: RunSession, prompt: str) -> str:
+def relevant_memories_prompt(matches: list[dict[str, Any]]) -> str:
+    if not matches:
+        return ""
+    parts = [
+        "以下内容由 Agent Memory RAG 从历史任务中按语义相关性召回。",
+        "它们只用于继承相关事实、用户偏好、历史产物和已验证经验；历史内容可能已经过期，若与本轮要求或当前工具状态冲突，以本轮要求和当前状态为准。",
+    ]
+    for index, match in enumerate(matches, start=1):
+        parts.extend(
+            [
+                "",
+                f"Memory {index}: run={match.get('run_id')} score={match.get('score')} model={match.get('embedding_model') or '-'}",
+                f"历史任务：{truncate_context(match.get('task'), 2500)}",
+                f"历史结果：{truncate_context(match.get('answer'), 4500)}",
+            ]
+        )
+        observations = truncate_context(match.get("observations"), 2500)
+        if observations:
+            parts.append(f"关键执行记录：{observations}")
+    return "\n".join(parts)
+
+
+def attach_run_context(run: RunSession, prompt: str) -> str:
     skills_prompt = selected_skills_prompt(
         combined_skill_ids(run), run.auto_skill_matches
     )
+    memories_prompt = relevant_memories_prompt(run.memory_matches)
     attachment_prompt = attachments_prompt(run.attachments)
     sections = []
+    if memories_prompt:
+        sections.append(memories_prompt)
     if skills_prompt:
         sections.append(skills_prompt)
     if attachment_prompt:
@@ -1179,18 +1368,18 @@ def attach_selected_skills(run: RunSession, prompt: str) -> str:
 
 def build_execution_prompt(run: RunSession) -> str:
     if not run.parent_run_id:
-        return attach_selected_skills(
+        return attach_run_context(
             run, append_exact_text_constraints(run.prompt, run.prompt)
         )
 
     if run.parent_run_id not in runs:
-        return attach_selected_skills(
+        return attach_run_context(
             run, append_exact_text_constraints(run.prompt, run.prompt)
         )
 
     history = [item for item in conversation_runs(run.id) if item.id != run.id]
     if not history:
-        return attach_selected_skills(
+        return attach_run_context(
             run, append_exact_text_constraints(run.prompt, run.prompt)
         )
 
@@ -1240,9 +1429,55 @@ def build_execution_prompt(run: RunSession) -> str:
         )
 
     parts.extend(["", "本轮用户追加要求：", run.prompt])
-    return attach_selected_skills(
+    return attach_run_context(
         run, append_exact_text_constraints("\n".join(parts), run.prompt)
     )
+
+
+async def execute_team_run(run: RunSession, execution_prompt: str) -> TeamOutcome:
+    async def worker_factory(role: TeamRole, task: TeamTask):
+        if role == TeamRole.DATA:
+            worker = DataAnalysis()
+        else:
+            worker = await ScopedManus.create_for_role(role.value)
+
+        add_uploaded_images_to_agent(worker, run.attachments)
+        tool_names = sorted(worker.available_tools.tool_map)
+        publish(
+            run,
+            "team_agent",
+            task_id=task.id,
+            role=role.value,
+            agent=worker.name,
+            tool_count=len(tool_names),
+            tools=tool_names,
+        )
+        return worker
+
+    def team_event_sink(event_type: str, payload: dict[str, Any]) -> None:
+        publish(run, event_type, **payload)
+
+    max_steps = run.max_steps or DEFAULT_MAX_STEPS
+    coordinator = TeamCoordinator(
+        worker_factory=worker_factory,
+        event_sink=team_event_sink,
+        worker_max_steps=max(8, min(24, max_steps // 2)),
+        worker_step_limits={
+            TeamRole.BROWSER: max(12, min(32, max_steps // 2)),
+            TeamRole.DATA: max(8, min(20, max_steps // 3)),
+            TeamRole.GENERAL: max(10, min(24, max_steps // 3)),
+        },
+        cancel_requested=lambda: run.status == "cancelling",
+    )
+    outcome = await coordinator.execute(run.prompt, execution_prompt)
+    run.team = redact(outcome.snapshot)
+    run.result = redact(outcome.trace)
+    run.answer = redact(
+        append_artifact_links(outcome.answer, outcome.trace) or outcome.answer
+    )
+    publish(run, "answer", content=run.answer)
+    publish(run, "result", content=run.result)
+    return outcome
 
 
 async def execute_run(run: RunSession) -> None:
@@ -1266,25 +1501,64 @@ async def execute_run(run: RunSession) -> None:
                 format="{time:HH:mm:ss} | {level:<8} | {message}",
             )
             publish(run, "user", content=run.prompt)
+            publish(run, "mode", mode=run.mode)
             if run.parent_run_id:
                 publish(run, "context", parent_run_id=run.parent_run_id)
             if run.auto_skill_matches:
                 publish(
                     run,
-                    "skill_rag",
+                    "skill_match",
                     count=len(run.auto_skill_matches),
                     matches=run.auto_skill_matches,
                 )
             elif list_skill_documents():
                 publish(
                     run,
-                    "skill_rag",
+                    "skill_match",
                     count=0,
                     matches=[],
-                    message="Skill RAG 未召回到超过阈值的 Skill。",
+                    message="关键词匹配未找到超过阈值的 Skill。",
+                )
+            if run.memory_matches:
+                publish(
+                    run,
+                    "memory_rag",
+                    count=len(run.memory_matches),
+                    matches=run.memory_matches,
+                )
+            elif config.memory_config.enabled:
+                publish(
+                    run,
+                    "memory_rag",
+                    count=0,
+                    matches=[],
+                    message="Memory RAG 未召回到相关历史。",
                 )
 
             execution_prompt = build_execution_prompt(run)
+            if run.mode == "team":
+                outcome = await execute_team_run(run, execution_prompt)
+                usable_results = sum(
+                    result.get("status") in {"completed", "partial"}
+                    for result in (run.team or {}).get("results", [])
+                )
+                if run.status == "cancelling":
+                    set_status(run, "cancelled")
+                elif usable_results:
+                    set_status(
+                        run,
+                        "completed",
+                        message=(
+                            "All team tasks completed."
+                            if outcome.success
+                            else "Team run completed with partial results."
+                        ),
+                    )
+                else:
+                    run.error = "No team worker completed its assigned task."
+                    set_status(run, "error", message=run.error)
+                return
+
             agent = await Manus.create()
             agent.max_steps = run.max_steps or DEFAULT_MAX_STEPS
 
@@ -1357,6 +1631,16 @@ async def execute_run(run: RunSession) -> None:
         publish(run, "error", message=run.error)
         set_status(run, "error")
     finally:
+        if run.status in {"completed", "step_limit"}:
+            try:
+                await asyncio.to_thread(remember_run, run)
+            except Exception as exc:
+                publish(
+                    run,
+                    "log",
+                    level="WARNING",
+                    message=f"Persisting Agent Memory failed: {exc}",
+                )
         if agent is not None:
             try:
                 await agent.cleanup()
@@ -1483,6 +1767,7 @@ async def status() -> dict[str, Any]:
         "model": getattr(default_llm, "model", None),
         "base_url": getattr(default_llm, "base_url", None),
         "reasoning_effort": getattr(default_llm, "reasoning_effort", None),
+        "execution_modes": ["single", "team"],
         "mcp_servers": mcp_servers,
         "gmail": gmail_auth_status(),
         "skills": list_skill_records(),
@@ -1537,16 +1822,21 @@ async def create_run(payload: RunRequest) -> dict[str, Any]:
         skill_ids=valid_skill_ids(payload.skill_ids),
         auto_skill_matches=[],
         attachments=attachments,
-        mode="single",
+        mode=payload.mode,
         created_at=now,
         updated_at=now,
     )
-    run.auto_skill_matches = retrieve_auto_skill_matches(
+    run.auto_skill_matches = await retrieve_auto_skill_matches(
         prompt, run.skill_ids, attachments
+    )
+    recent_history = conversation_runs(parent_run_id)[-8:] if parent_run_id else []
+    run.memory_matches = await retrieve_relevant_memories(
+        prompt,
+        exclude_run_ids={item.id for item in recent_history},
     )
     runs[run_id] = run
     prune_runs()
-    publish(run, "created", id=run_id)
+    publish(run, "created", id=run_id, mode=run.mode)
     run.task = asyncio.create_task(execute_run(run))
     return run.to_dict()
 
@@ -1595,6 +1885,8 @@ async def delete_all_finished_runs() -> dict[str, Any]:
 
     for run_id in delete_ids:
         runs.pop(run_id, None)
+    if config.memory_config.enabled:
+        await asyncio.to_thread(MEMORY_STORE.delete_run_ids, delete_ids)
     save_runs()
     return {
         "deleted": sorted(delete_ids),
@@ -1621,6 +1913,8 @@ async def delete_run(run_id: str) -> dict[str, Any]:
 
     for candidate_id in delete_ids:
         runs.pop(candidate_id, None)
+    if config.memory_config.enabled:
+        await asyncio.to_thread(MEMORY_STORE.delete_run_ids, set(delete_ids))
     save_runs()
     return {"deleted": delete_ids}
 

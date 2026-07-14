@@ -83,7 +83,7 @@ class PythonExecute(BaseTool):
                 and not final_result.get("observation")
                 and proc.exitcode not in (None, 0)
             ):
-                final_result[
-                    "observation"
-                ] = f"Python worker exited unexpectedly with code {proc.exitcode}."
+                final_result["observation"] = (
+                    f"Python worker exited unexpectedly with code {proc.exitcode}."
+                )
             return final_result

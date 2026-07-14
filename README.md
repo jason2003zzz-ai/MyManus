@@ -1,6 +1,6 @@
 # MyManus
 
-MyManus is a web-first agent based on OpenManus. It keeps the single-agent ReAct execution style, replaces the old browser stack with Microsoft Playwright MCP, and adds task-level capability routing, completion gates, automatic Skill retrieval, and a practical web harness for tasks, history, attachments, and downloadable Word/Excel deliverables.
+MyManus is a web-first Agent system based on OpenManus. It supports both single-agent ReAct execution and coordinator-led multi-agent execution, replaces the old browser stack with Microsoft Playwright MCP, and adds evidence-aware completion gates, Agent Memory RAG, lightweight Skill matching, and a practical web workspace for tasks, history, attachments, and downloadable Word/Excel deliverables.
 
 <p align="center">
   <img src="docs/images/mymanus-workspace.png" alt="MyManus Web Workspace with single-agent and multi-agent execution modes" width="100%" />
@@ -8,15 +8,17 @@ MyManus is a web-first agent based on OpenManus. It keeps the single-agent ReAct
 
 ## Features
 
-- Single-agent ReAct workflow with tool calling.
+- Switchable single-agent ReAct and multi-agent execution for every task.
+- Multi-agent coordinator with dependency-aware planning, isolated Browser/Data Analysis/General executors, shared results, and final synthesis.
 - Web UI at `http://127.0.0.1:7788`.
 - Microsoft Playwright MCP browser control with extension mode and vision tools.
 - StepFun / StepSearch MCP integration for web search and page fetching.
 - Gmail MCP integration for mailbox search, reading, drafting, sending, labels, filters, and attachments.
-- Task-level capability routing, evidence receipts, recovery directives, and completion validation.
+- Task-level capability routing, evidence receipts, recovery directives, and a Termination Gate that blocks unsupported completion or premature “not found” answers.
+- Agent Memory RAG backed by BGE dense embeddings, persistent cross-session history, and retrieval-quality filtering.
 - Word `.docx` and Excel `.xlsx` generation tools.
 - Upload support for `docx`, `pdf`, `xlsx`, `png`, `jpg`, and `jpeg`.
-- Custom Skills loaded from `workspace/skills/*/SKILL.md`, with manual selection and automatic RAG retrieval.
+- Ten reusable Skills loaded from `workspace/skills/*/SKILL.md`, with manual selection and lightweight deterministic matching instead of embedding retrieval.
 - Recent task history, continuation context, stop button, and downloadable artifacts.
 
 ## 演示
@@ -86,6 +88,11 @@ Then open:
 http://127.0.0.1:7788
 ```
 
+Choose the execution mode in the left panel before starting a task:
+
+- **Single agent** runs the original direct ReAct loop and is best for focused tasks.
+- **Multi-agent** asks the coordinator to create dependent work packages, assigns them to capability-isolated executors, and composes a final answer from their shared results.
+
 If you installed the package in editable mode, these aliases are also available:
 
 ```bash
@@ -139,7 +146,7 @@ Do not commit these local files:
 - `config/config.toml`
 - `config/mcp.json`
 - `.env`
-- `workspace/`
+- runtime files under `workspace/` (the reusable `workspace/skills/` directory is versioned)
 - `logs/`
 
 Use the example files as templates:
@@ -155,7 +162,11 @@ Skills are stored under:
 workspace/skills/<skill-id>/SKILL.md
 ```
 
-The web UI can create, edit, select, and delete skills. Skills can be selected manually, and relevant unselected skills are automatically retrieved for each task using lightweight local RAG.
+The web UI can create, edit, select, and delete Skills. Skills can be selected manually, while relevant unselected Skills are matched automatically with a lightweight, explainable TF-IDF intent matcher.
+
+## Agent Memory RAG
+
+Cross-session task history is stored locally and retrieved with dense embeddings before a new run. The default configuration uses FastEmbed with `BAAI/bge-small-zh-v1.5`; an OpenAI-compatible embeddings endpoint can also be configured. Unverified negative web-search conclusions are retained for audit but excluded from future retrieval, preventing low-quality historical answers from contaminating later tasks.
 
 ## Attachments
 

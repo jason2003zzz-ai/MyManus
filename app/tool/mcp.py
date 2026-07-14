@@ -31,9 +31,7 @@ def _image_mime_type(path: Path) -> str:
 
 def _resolve_artifact_path(raw_path: str) -> Optional[Path]:
     path = Path(raw_path)
-    candidates = (
-        [path] if path.is_absolute() else [PROJECT_ROOT / path, Path.cwd() / path]
-    )
+    candidates = [path] if path.is_absolute() else [PROJECT_ROOT / path, Path.cwd() / path]
     for candidate in candidates:
         try:
             resolved = candidate.resolve()
@@ -257,10 +255,7 @@ class MCPClients(ToolCollection):
                         try:
                             await exit_stack.aclose()
                         except (RuntimeError, asyncio.CancelledError) as e:
-                            if (
-                                isinstance(e, asyncio.CancelledError)
-                                or "cancel scope" in str(e).lower()
-                            ):
+                            if isinstance(e, asyncio.CancelledError) or "cancel scope" in str(e).lower():
                                 logger.debug(
                                     f"Cancel scope error during disconnect from {server_id}, continuing with cleanup: {e}"
                                 )
