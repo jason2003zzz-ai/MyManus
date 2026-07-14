@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote, urlparse
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
@@ -22,6 +29,7 @@ from pydantic import BaseModel, Field
 from app.agent.manus import Manus
 from app.config import PROJECT_ROOT, config
 from app.schema import Message
+from app.web.skill_rag import SkillDocument, retrieve_relevant_skills
 
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -31,8 +39,10 @@ SKILLS_DIR = config.workspace_root / "skills"
 UPLOADS_DIR = config.workspace_root / "uploads"
 UPLOAD_METADATA_DIR = UPLOADS_DIR / ".metadata"
 TERMINAL_STATUSES = {"completed", "error", "cancelled", "step_limit"}
-DEFAULT_MAX_STEPS = 200
+DEFAULT_MAX_STEPS = 80
 MAX_SKILL_CHARS = 12000
+AUTO_SKILL_TOP_K = 3
+AUTO_SKILL_MIN_SCORE = 0.08
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 MAX_INLINE_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_UPLOADS_PER_RUN = 8
@@ -46,8 +56,7 @@ EXACT_TEXT_PATTERNS = [
     re.compile(r"(?:评论|回复|发布|发送|输入|填写|私信)\s*[：:]\s*([^\n]{1,300})"),
 ]
 NO_FINAL_ANSWER_MESSAGE = (
-    "任务已结束，但模型没有生成可展示的最终答案。运行过程已保留在右侧；"
-    "请基于当前对话继续，让 MyManus 重新整理最终结论。"
+    "任务已结束，但模型没有生成可展示的最终答案。运行过程已保留在右侧；" "请基于当前对话继续，让 MyManus 重新整理最终结论。"
 )
 
 app = FastAPI(title="MyManus Web", version="0.1.0")
@@ -99,6 +108,7 @@ class RunSession:
     max_steps: Optional[int]
     parent_run_id: Optional[str]
     skill_ids: list[str]
+    auto_skill_matches: list[dict[str, Any]]
     attachments: list[dict[str, Any]]
     mode: str
     created_at: str
@@ -118,6 +128,7 @@ class RunSession:
             "max_steps": self.max_steps,
             "parent_run_id": self.parent_run_id,
             "skill_ids": self.skill_ids,
+            "auto_skill_matches": self.auto_skill_matches,
             "attachments": self.attachments,
             "mode": self.mode,
             "created_at": self.created_at,
@@ -254,14 +265,22 @@ async def save_uploaded_file(upload: UploadFile) -> dict[str, Any]:
                     break
                 size += len(chunk)
                 if size > MAX_UPLOAD_BYTES:
-                    raise HTTPException(status_code=413, detail="File is larger than 64 MB.")
+                    raise HTTPException(
+                        status_code=413, detail="File is larger than 64 MB."
+                    )
                 output.write(chunk)
     finally:
         await upload.close()
 
     ensure_allowed_upload(target, suffix)
-    content_type = upload.content_type or mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-    relative_path = target.resolve().relative_to(config.workspace_root.resolve()).as_posix()
+    content_type = (
+        upload.content_type
+        or mimetypes.guess_type(target.name)[0]
+        or "application/octet-stream"
+    )
+    relative_path = (
+        target.resolve().relative_to(config.workspace_root.resolve()).as_posix()
+    )
     kind = "image" if suffix in IMAGE_UPLOAD_EXTENSIONS else suffix.lstrip(".")
 
     record = {
@@ -296,7 +315,11 @@ def docx_preview(path: Path, limit: int) -> str:
     from docx import Document
 
     document = Document(path)
-    parts = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+    parts = [
+        paragraph.text.strip()
+        for paragraph in document.paragraphs
+        if paragraph.text.strip()
+    ]
     return truncate_preview("\n".join(parts), limit)
 
 
@@ -391,8 +414,9 @@ def stepfun_file_extract_preview(record: dict[str, Any], limit: int) -> str:
 
     file_id = ""
     try:
-        import requests
         import time
+
+        import requests
 
         with path.open("rb") as handle:
             upload_response = requests.post(
@@ -462,6 +486,17 @@ def attachment_preview(record: dict[str, Any], limit: int) -> str:
     return ""
 
 
+def gmail_auth_status() -> dict[str, Any]:
+    gmail_home = Path.home() / ".gmail-mcp"
+    return {
+        "configured": "gmail" in config.mcp_config.servers,
+        "oauth_keys": (gmail_home / "gcp-oauth.keys.json").is_file(),
+        "credentials": (gmail_home / "credentials.json").is_file(),
+        "credentials_dir": str(gmail_home),
+        "auth_command": "npm run gmail:auth",
+    }
+
+
 def attachments_prompt(records: list[dict[str, Any]]) -> str:
     if not records:
         return ""
@@ -495,7 +530,9 @@ def attachments_prompt(records: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def image_records_for_direct_input(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def image_records_for_direct_input(
+    records: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     result = []
     for record in records:
         if record.get("kind") != "image":
@@ -523,7 +560,9 @@ def add_uploaded_images_to_agent(agent: Manus, records: list[dict[str, Any]]) ->
                     f"\nabsolute_path: {record['absolute_path']}"
                 ),
                 base64_image=encoded,
-                image_mime_type=record.get("content_type") or mimetypes.guess_type(path.name)[0] or "image/jpeg",
+                image_mime_type=record.get("content_type")
+                or mimetypes.guess_type(path.name)[0]
+                or "image/jpeg",
             )
         )
 
@@ -545,7 +584,9 @@ def save_runs() -> None:
         RUNS_FILE.parent.mkdir(parents=True, exist_ok=True)
         stored = [
             run_to_storage(run)
-            for run in sorted(runs.values(), key=lambda item: item.created_at, reverse=True)
+            for run in sorted(
+                runs.values(), key=lambda item: item.created_at, reverse=True
+            )
             if run.status in TERMINAL_STATUSES
         ][:50]
         RUNS_FILE.write_text(
@@ -574,6 +615,7 @@ def load_runs() -> None:
                 max_steps=item.get("max_steps"),
                 parent_run_id=item.get("parent_run_id"),
                 skill_ids=item.get("skill_ids") or [],
+                auto_skill_matches=item.get("auto_skill_matches") or [],
                 attachments=item.get("attachments") or [],
                 mode="single",
                 created_at=item["created_at"],
@@ -606,9 +648,7 @@ def thread_run_ids(run_id: str) -> list[str]:
 
     root_id = root_run_id(run)
     return [
-        candidate.id
-        for candidate in runs.values()
-        if root_run_id(candidate) == root_id
+        candidate.id for candidate in runs.values() if root_run_id(candidate) == root_id
     ]
 
 
@@ -746,6 +786,27 @@ def list_skill_records() -> list[dict[str, Any]]:
     return records
 
 
+def list_skill_documents() -> list[SkillDocument]:
+    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    documents: list[SkillDocument] = []
+    for path in sorted(SKILLS_DIR.glob("*/SKILL.md")):
+        try:
+            skill_id = path.parent.name
+            content = path.read_text(encoding="utf-8")
+            metadata = parse_skill_metadata(skill_id, content)
+            documents.append(
+                SkillDocument(
+                    id=skill_id,
+                    name=metadata["name"],
+                    summary=metadata["summary"],
+                    content=content,
+                )
+            )
+        except OSError:
+            continue
+    return documents
+
+
 def read_skill_content(skill_id: str) -> str:
     path = skill_markdown_path(skill_id)
     if not path.is_file():
@@ -766,22 +827,90 @@ def valid_skill_ids(values: list[str]) -> list[str]:
     return valid[:8]
 
 
-def selected_skills_prompt(skill_ids: list[str]) -> str:
+def serialize_skill_match(match) -> dict[str, Any]:
+    return {
+        "id": match.id,
+        "name": match.name,
+        "summary": match.summary,
+        "score": match.score,
+        "matched_terms": list(match.matched_terms),
+    }
+
+
+def skill_rag_query(prompt: str, attachments: list[dict[str, Any]]) -> str:
+    parts = [prompt]
+    for record in attachments or []:
+        parts.append(
+            " ".join(
+                str(value)
+                for value in [
+                    record.get("name"),
+                    record.get("extension"),
+                    record.get("content_type"),
+                ]
+                if value
+            )
+        )
+    return "\n".join(part for part in parts if part)
+
+
+def retrieve_auto_skill_matches(
+    prompt: str,
+    selected_skill_ids: list[str],
+    attachments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    matches = retrieve_relevant_skills(
+        skill_rag_query(prompt, attachments),
+        list_skill_documents(),
+        exclude_ids=set(selected_skill_ids),
+        top_k=AUTO_SKILL_TOP_K,
+        min_score=AUTO_SKILL_MIN_SCORE,
+    )
+    return [serialize_skill_match(match) for match in matches]
+
+
+def combined_skill_ids(run: RunSession) -> list[str]:
+    return valid_skill_ids(
+        [
+            *run.skill_ids,
+            *(str(match.get("id") or "") for match in run.auto_skill_matches),
+        ]
+    )
+
+
+def selected_skills_prompt(
+    skill_ids: list[str],
+    auto_skill_matches: list[dict[str, Any]] | None = None,
+) -> str:
     valid_ids = valid_skill_ids(skill_ids)
     if not valid_ids:
         return ""
 
+    auto_by_id = {
+        str(match.get("id")): match
+        for match in auto_skill_matches or []
+        if match.get("id")
+    }
     parts = [
-        "以下是本轮任务开始前已加载的自定义 Skills。请先阅读并遵守这些 SKILL.md，"
-        "但如果它们与用户本轮明确要求冲突，以用户本轮要求为准。",
+        "以下是本轮任务开始前已加载的自定义 Skills，包含用户手动选择和基于 RAG 自动召回的 Skills。"
+        "请先阅读并遵守这些 SKILL.md，但如果它们与用户本轮明确要求冲突，以用户本轮要求为准。",
     ]
     for index, skill_id in enumerate(valid_ids, start=1):
         content = truncate_context(read_skill_content(skill_id), MAX_SKILL_CHARS)
         metadata = parse_skill_metadata(skill_id, content)
+        auto_match = auto_by_id.get(skill_id)
+        if auto_match:
+            source = (
+                f"RAG 自动召回，score={auto_match.get('score')}, "
+                f"matched_terms={', '.join(auto_match.get('matched_terms') or []) or '-'}"
+            )
+        else:
+            source = "用户手动选择"
         parts.extend(
             [
                 "",
                 f"Skill {index}: {metadata['name']} ({skill_id})",
+                f"Source: {source}",
                 "```markdown",
                 content,
                 "```",
@@ -853,7 +982,10 @@ def extract_plain_step_answer(result: str) -> str:
             continue
         if content.startswith("Error executing"):
             continue
-        if "The interaction has been completed with status:" in content and len(content) < 200:
+        if (
+            "The interaction has been completed with status:" in content
+            and len(content) < 200
+        ):
             continue
         return content
     return ""
@@ -906,7 +1038,9 @@ def extract_artifact_answer(result: str) -> str:
     return "\n".join(lines)
 
 
-def append_artifact_links(answer: Optional[str], result: Optional[str]) -> Optional[str]:
+def append_artifact_links(
+    answer: Optional[str], result: Optional[str]
+) -> Optional[str]:
     if not answer or not result:
         return answer
 
@@ -962,6 +1096,15 @@ def extract_user_answer_content(content: Optional[str]) -> str:
 def extract_final_answer(agent: Manus, fallback: str) -> str:
     """Return a real user-facing final answer instead of tool-call preambles."""
     artifact_answer = extract_artifact_answer(fallback)
+    structured_final_answer = extract_user_answer_content(
+        getattr(agent, "final_answer", None)
+    )
+    if structured_final_answer:
+        return (
+            append_artifact_links(structured_final_answer, fallback)
+            or structured_final_answer
+        )
+
     for message in reversed(agent.memory.messages):
         if message.role != "assistant" or not message.content:
             continue
@@ -1019,7 +1162,9 @@ def append_exact_text_constraints(prompt: str, source_prompt: str) -> str:
 
 
 def attach_selected_skills(run: RunSession, prompt: str) -> str:
-    skills_prompt = selected_skills_prompt(run.skill_ids)
+    skills_prompt = selected_skills_prompt(
+        combined_skill_ids(run), run.auto_skill_matches
+    )
     attachment_prompt = attachments_prompt(run.attachments)
     sections = []
     if skills_prompt:
@@ -1034,14 +1179,20 @@ def attach_selected_skills(run: RunSession, prompt: str) -> str:
 
 def build_execution_prompt(run: RunSession) -> str:
     if not run.parent_run_id:
-        return attach_selected_skills(run, append_exact_text_constraints(run.prompt, run.prompt))
+        return attach_selected_skills(
+            run, append_exact_text_constraints(run.prompt, run.prompt)
+        )
 
     if run.parent_run_id not in runs:
-        return attach_selected_skills(run, append_exact_text_constraints(run.prompt, run.prompt))
+        return attach_selected_skills(
+            run, append_exact_text_constraints(run.prompt, run.prompt)
+        )
 
     history = [item for item in conversation_runs(run.id) if item.id != run.id]
     if not history:
-        return attach_selected_skills(run, append_exact_text_constraints(run.prompt, run.prompt))
+        return attach_selected_skills(
+            run, append_exact_text_constraints(run.prompt, run.prompt)
+        )
 
     parts = [
         "你正在继续当前 MyManus Web 对话。",
@@ -1089,7 +1240,9 @@ def build_execution_prompt(run: RunSession) -> str:
         )
 
     parts.extend(["", "本轮用户追加要求：", run.prompt])
-    return attach_selected_skills(run, append_exact_text_constraints("\n".join(parts), run.prompt))
+    return attach_selected_skills(
+        run, append_exact_text_constraints("\n".join(parts), run.prompt)
+    )
 
 
 async def execute_run(run: RunSession) -> None:
@@ -1115,6 +1268,21 @@ async def execute_run(run: RunSession) -> None:
             publish(run, "user", content=run.prompt)
             if run.parent_run_id:
                 publish(run, "context", parent_run_id=run.parent_run_id)
+            if run.auto_skill_matches:
+                publish(
+                    run,
+                    "skill_rag",
+                    count=len(run.auto_skill_matches),
+                    matches=run.auto_skill_matches,
+                )
+            elif list_skill_documents():
+                publish(
+                    run,
+                    "skill_rag",
+                    count=0,
+                    matches=[],
+                    message="Skill RAG 未召回到超过阈值的 Skill。",
+                )
 
             execution_prompt = build_execution_prompt(run)
             agent = await Manus.create()
@@ -1126,20 +1294,22 @@ async def execute_run(run: RunSession) -> None:
                 "tools",
                 count=len(tool_names),
                 browser_tools=len(
-                    [
-                        name
-                        for name in tool_names
-                        if name.startswith("mcp_playwright_")
-                    ]
+                    [name for name in tool_names if name.startswith("mcp_playwright_")]
+                ),
+                gmail_tools=len(
+                    [name for name in tool_names if name.startswith("mcp_gmail_")]
                 ),
             )
 
             if image_records_for_direct_input(run.attachments):
                 agent.memory.add_message(Message.user_message(execution_prompt))
                 add_uploaded_images_to_agent(agent, run.attachments)
-                result = await agent.run()
+                result = await agent.run(task_objective=run.prompt)
             else:
-                result = await agent.run(execution_prompt)
+                result = await agent.run(
+                    execution_prompt,
+                    task_objective=run.prompt,
+                )
             run.result = redact(result)
             hit_step_limit = "Terminated: Reached max steps" in result
             final_answer = extract_final_answer(agent, result)
@@ -1155,9 +1325,22 @@ async def execute_run(run: RunSession) -> None:
             if run.status == "cancelling":
                 set_status(run, "cancelled")
             elif hit_step_limit:
-                set_status(run, "step_limit", message="Reached max steps before producing a final answer.")
-            else:
+                set_status(
+                    run,
+                    "step_limit",
+                    message="Reached max steps before producing a final answer.",
+                )
+            elif getattr(agent, "finish_status", None) == "failure":
+                run.error = redact(
+                    getattr(agent, "finish_reason", None)
+                    or "Agent terminated without completing the requested task."
+                )
+                set_status(run, "error", message=run.error)
+            elif getattr(agent, "finish_status", None) == "success":
                 set_status(run, "completed")
+            else:
+                run.error = "Agent ended without a valid success or failure status."
+                set_status(run, "error", message=run.error)
     except asyncio.CancelledError as exc:
         externally_cancelled = run.status == "cancelling"
         if externally_cancelled:
@@ -1289,12 +1472,8 @@ async def status() -> dict[str, Any]:
             "command": server.command,
             "url": server.url,
             "args": server.args,
-            "env": {
-                key: "<redacted>" for key in (server.env or {}).keys()
-            },
-            "headers": {
-                key: "<redacted>" for key in (server.headers or {}).keys()
-            },
+            "env": {key: "<redacted>" for key in (server.env or {}).keys()},
+            "headers": {key: "<redacted>" for key in (server.headers or {}).keys()},
         }
 
     default_llm = config.llm.get("default")
@@ -1305,10 +1484,13 @@ async def status() -> dict[str, Any]:
         "base_url": getattr(default_llm, "base_url", None),
         "reasoning_effort": getattr(default_llm, "reasoning_effort", None),
         "mcp_servers": mcp_servers,
+        "gmail": gmail_auth_status(),
         "skills": list_skill_records(),
         "active_runs": [
             run.to_dict()
-            for run in sorted(runs.values(), key=lambda item: item.updated_at, reverse=True)
+            for run in sorted(
+                runs.values(), key=lambda item: item.updated_at, reverse=True
+            )
             if run.status not in TERMINAL_STATUSES
         ],
         "runs": [run.to_dict() for run in recent_thread_runs()],
@@ -1335,10 +1517,15 @@ async def create_run(payload: RunRequest) -> dict[str, Any]:
             raise HTTPException(status_code=409, detail="Parent run is still active.")
     attachment_ids = list(dict.fromkeys(payload.attachment_ids))
     if len(attachment_ids) > MAX_UPLOADS_PER_RUN:
-        raise HTTPException(status_code=400, detail=f"At most {MAX_UPLOADS_PER_RUN} attachments per run.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"At most {MAX_UPLOADS_PER_RUN} attachments per run.",
+        )
     attachments = selected_upload_records(attachment_ids)
     if len(attachments) != len(attachment_ids):
-        raise HTTPException(status_code=400, detail="One or more uploaded attachments were not found.")
+        raise HTTPException(
+            status_code=400, detail="One or more uploaded attachments were not found."
+        )
 
     run_id = uuid.uuid4().hex[:12]
     now = utc_now()
@@ -1348,10 +1535,14 @@ async def create_run(payload: RunRequest) -> dict[str, Any]:
         max_steps=DEFAULT_MAX_STEPS,
         parent_run_id=parent_run_id,
         skill_ids=valid_skill_ids(payload.skill_ids),
+        auto_skill_matches=[],
         attachments=attachments,
         mode="single",
         created_at=now,
         updated_at=now,
+    )
+    run.auto_skill_matches = retrieve_auto_skill_matches(
+        prompt, run.skill_ids, attachments
     )
     runs[run_id] = run
     prune_runs()
@@ -1395,7 +1586,9 @@ async def delete_all_finished_runs() -> dict[str, Any]:
 
     for recent_run in recent_thread_runs():
         thread_ids = thread_run_ids(recent_run.id)
-        if any(runs[thread_id].status not in TERMINAL_STATUSES for thread_id in thread_ids):
+        if any(
+            runs[thread_id].status not in TERMINAL_STATUSES for thread_id in thread_ids
+        ):
             skipped_active.append(recent_run.id)
             continue
         delete_ids.update(thread_ids)
@@ -1422,7 +1615,9 @@ async def delete_run(run_id: str) -> dict[str, Any]:
         if runs[candidate_id].status not in TERMINAL_STATUSES
     ]
     if active_ids:
-        raise HTTPException(status_code=409, detail="Cannot delete an active conversation.")
+        raise HTTPException(
+            status_code=409, detail="Cannot delete an active conversation."
+        )
 
     for candidate_id in delete_ids:
         runs.pop(candidate_id, None)

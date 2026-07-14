@@ -2,7 +2,7 @@ const state = {
   currentRunId: null,
   parentRunId: null,
   conversation: [],
-  forceNewConversation: false,
+  forceNewConversation: true,
   socket: null,
   running: false,
   status: "idle",
@@ -53,8 +53,8 @@ const els = {
   columnResizers: document.querySelectorAll(".col-resizer"),
 };
 
-const LAYOUT_KEY = "mymanus-web-layout-v1";
-const SKILLS_KEY = "mymanus-selected-skills-v1";
+const LAYOUT_KEY = "openmanus-web-layout-v3";
+const SKILLS_KEY = "openmanus-selected-skills-v1";
 const DEFAULT_LAYOUT = {
   prompt: 330,
   run: 460,
@@ -383,7 +383,15 @@ function renderMarkdown(value) {
 }
 
 function setResult(value) {
-  els.result.innerHTML = renderMarkdown(value || "-");
+  if (!value || value === "-") {
+    els.result.innerHTML = `<div class="empty-state">
+      <div class="empty-orbit" aria-hidden="true"><span></span></div>
+      <h3>准备好开始工作</h3>
+      <p>在左侧描述任务，MyManus 会在这里呈现过程与结果。</p>
+    </div>`;
+    return;
+  }
+  els.result.innerHTML = renderMarkdown(value);
 }
 
 function clearProcessStreams() {
@@ -644,7 +652,7 @@ function statusLabel(status) {
 
 function renderConversation(conversation) {
   if (!conversation.length) {
-    setResult("-");
+    setResult();
     return;
   }
 
@@ -904,6 +912,7 @@ function eventTitle(event) {
   if (event.type === "status") return `状态 · ${event.status}`;
   if (event.type === "log") return `日志 · ${event.level || "INFO"}`;
   if (event.type === "tools") return "工具";
+  if (event.type === "skill_rag") return "Skill RAG";
   if (event.type === "agent") return `${event.agent || "Agent"} · ${event.status || ""}`;
   if (event.type === "result") return "执行摘要";
   if (event.type === "error") return "错误";
@@ -916,7 +925,14 @@ function eventBody(event) {
   if (event.type === "log") return event.message || "";
   if (event.type === "status") return event.message || event.status || "";
   if (event.type === "tools") {
-    return `已加载 ${event.count} 个工具，其中 Playwright MCP ${event.browser_tools} 个`;
+    return `已加载 ${event.count} 个工具，其中 Playwright MCP ${event.browser_tools} 个，Gmail MCP ${event.gmail_tools || 0} 个`;
+  }
+  if (event.type === "skill_rag") {
+    if (!event.count) return event.message || "未自动召回 Skill";
+    const names = (event.matches || [])
+      .map((match) => `${match.name || match.id} (${Number(match.score || 0).toFixed(3)})`)
+      .join("、");
+    return `自动召回 ${event.count} 个 Skill：${names}`;
   }
   if (event.type === "agent") return event.content || "";
   if (event.type === "result") return event.content || "";
@@ -1216,7 +1232,7 @@ function renderRuns(runs) {
     title.textContent = compactText(run.prompt, 64);
 
     const meta = document.createElement("span");
-    meta.textContent = `${run.status} · ${formatTime(run.updated_at)}`;
+    meta.textContent = `${statusLabel(run.status)} · ${formatTime(run.updated_at)}`;
 
     const deleteButton = document.createElement("button");
     deleteButton.className = "run-item-delete";
@@ -1241,19 +1257,18 @@ async function refreshStatus() {
   }
   const info = await response.json();
 
-  els.modelLine.textContent = `${info.model || "-"} · ${info.reasoning_effort || "-"}`;
+  const gmail = info.gmail || {};
+  const gmailText = gmail.configured
+    ? gmail.credentials
+      ? "Gmail 已授权"
+      : "Gmail 待授权"
+    : "Gmail 未配置";
+  els.modelLine.textContent = `${info.model || "-"} · ${info.reasoning_effort || "-"} · ${gmailText}`;
   if (Array.isArray(info.skills)) {
     renderSkills(info.skills);
   }
   const recentRuns = info.runs || [];
   renderRuns(recentRuns);
-
-  if (!state.running && !state.currentRunId && !state.forceNewConversation) {
-    const latestRun = recentRuns.find((run) => TERMINAL_STATUSES.has(run.status));
-    if (latestRun) {
-      await showRun(latestRun.id, { includeEvents: false });
-    }
-  }
 
   if (!state.running && state.status === "idle") {
     setBadge("待命", "neutral");
@@ -1281,6 +1296,14 @@ els.clearButton.addEventListener("click", () => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !els.skillsDialog.hidden) {
     closeSkillsDialog();
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && !state.running) {
+    event.preventDefault();
+    els.form.requestSubmit();
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+    event.preventDefault();
+    startNewConversation();
   }
 });
 

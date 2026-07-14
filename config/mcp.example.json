@@ -23,6 +23,14 @@
       "headers": {
         "Authorization": "Bearer ${STEPFUN_API_KEY}"
       }
+    },
+    "gmail": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@gongrzhe/server-gmail-autoauth-mcp"
+      ]
     }
   }
 }

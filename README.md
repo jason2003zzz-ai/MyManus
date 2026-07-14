@@ -1,6 +1,6 @@
 # MyManus
 
-MyManus is a web-first agent based on OpenManus. It keeps the single-agent ReAct execution style, replaces the old browser stack with Microsoft Playwright MCP, and adds a practical web harness for tasks, history, skills, attachments, and downloadable Word/Excel deliverables.
+MyManus is a web-first agent based on OpenManus. It keeps the single-agent ReAct execution style, replaces the old browser stack with Microsoft Playwright MCP, and adds task-level capability routing, completion gates, automatic Skill retrieval, and a practical web harness for tasks, history, attachments, and downloadable Word/Excel deliverables.
 
 ## Features
 
@@ -8,9 +8,11 @@ MyManus is a web-first agent based on OpenManus. It keeps the single-agent ReAct
 - Web UI at `http://127.0.0.1:7788`.
 - Microsoft Playwright MCP browser control with extension mode and vision tools.
 - StepFun / StepSearch MCP integration for web search and page fetching.
+- Gmail MCP integration for mailbox search, reading, drafting, sending, labels, filters, and attachments.
+- Task-level capability routing, evidence receipts, recovery directives, and completion validation.
 - Word `.docx` and Excel `.xlsx` generation tools.
 - Upload support for `docx`, `pdf`, `xlsx`, `png`, `jpg`, and `jpeg`.
-- Custom Skills loaded from `workspace/skills/*/SKILL.md`.
+- Custom Skills loaded from `workspace/skills/*/SKILL.md`, with manual selection and automatic RAG retrieval.
 - Recent task history, continuation context, stop button, and downloadable artifacts.
 
 ## 演示
@@ -32,11 +34,12 @@ https://github.com/user-attachments/assets/00a5a116-03b0-414b-8ef9-e9753ceb47e0
 - Google Chrome
 - A StepFun API key
 - Optional but recommended: Playwright MCP Bridge / extension token for controlling your logged-in Chrome session
+- Optional: a Google Cloud OAuth client for Gmail MCP
 
 ## Quick Start
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/jason2003zzz-ai/MyManus.git
 cd MyManus
 
 python3.12 -m venv .venv
@@ -112,6 +115,19 @@ cp config/mcp.example.json config/mcp.json
 
 The template uses `npx @playwright/mcp@0.0.77`. You can change it to a local binary such as `./node_modules/.bin/playwright-mcp` if you prefer.
 
+## Gmail MCP Setup
+
+The MCP template also includes `@gongrzhe/server-gmail-autoauth-mcp`. To enable Gmail:
+
+1. Follow the package's Google Cloud OAuth setup and place the OAuth keys in `~/.gmail-mcp/gcp-oauth.keys.json`.
+2. Run the authentication flow:
+
+```bash
+npm run gmail:auth
+```
+
+After authentication, keep the `gmail` entry enabled in `config/mcp.json`. Gmail support is optional; MyManus continues to run when that server is removed from the local MCP configuration.
+
 ## Configuration Files
 
 Do not commit these local files:
@@ -135,7 +151,7 @@ Skills are stored under:
 workspace/skills/<skill-id>/SKILL.md
 ```
 
-The web UI can create, edit, select, and delete skills. Selected skills are injected into the prompt before a run starts.
+The web UI can create, edit, select, and delete skills. Skills can be selected manually, and relevant unselected skills are automatically retrieved for each task using lightweight local RAG.
 
 ## Attachments
 

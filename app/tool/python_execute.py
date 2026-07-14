@@ -24,14 +24,19 @@ class PythonExecute(BaseTool):
 
     def _run_code(self, code: str, result_dict: dict, safe_globals: dict) -> None:
         original_stdout = sys.stdout
+        output_buffer = StringIO()
         try:
-            output_buffer = StringIO()
             sys.stdout = output_buffer
             exec(code, safe_globals, safe_globals)
             result_dict["observation"] = output_buffer.getvalue()
             result_dict["success"] = True
-        except Exception as e:
-            result_dict["observation"] = str(e)
+        except BaseException as exc:
+            output = output_buffer.getvalue()
+            detail = str(exc).strip()
+            error = type(exc).__name__
+            if detail:
+                error = f"{error}: {detail}"
+            result_dict["observation"] = f"{output}{error}"
             result_dict["success"] = False
         finally:
             sys.stdout = original_stdout
@@ -72,4 +77,13 @@ class PythonExecute(BaseTool):
                     "observation": f"Execution timeout after {timeout} seconds",
                     "success": False,
                 }
-            return dict(result)
+            final_result = dict(result)
+            if (
+                not final_result.get("success")
+                and not final_result.get("observation")
+                and proc.exitcode not in (None, 0)
+            ):
+                final_result[
+                    "observation"
+                ] = f"Python worker exited unexpectedly with code {proc.exitcode}."
+            return final_result
