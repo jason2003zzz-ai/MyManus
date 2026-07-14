@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import re
 from contextlib import AsyncExitStack
@@ -30,7 +31,9 @@ def _image_mime_type(path: Path) -> str:
 
 def _resolve_artifact_path(raw_path: str) -> Optional[Path]:
     path = Path(raw_path)
-    candidates = [path] if path.is_absolute() else [PROJECT_ROOT / path, Path.cwd() / path]
+    candidates = (
+        [path] if path.is_absolute() else [PROJECT_ROOT / path, Path.cwd() / path]
+    )
     for candidate in candidates:
         try:
             resolved = candidate.resolve()
@@ -98,13 +101,15 @@ class MCPClients(ToolCollection):
     A collection of tools that connects to multiple MCP servers and manages available tools through the Model Context Protocol.
     """
 
-    sessions: Dict[str, ClientSession] = {}
-    exit_stacks: Dict[str, AsyncExitStack] = {}
     description: str = "MCP client tools for server interaction"
 
     def __init__(self):
         super().__init__()  # Initialize with empty tools list
         self.name = "mcp"  # Keep name for backward compatibility
+        # MCP sessions belong to one agent run. Class-level dictionaries caused
+        # a new run to disconnect another run's Playwright/Gmail sessions.
+        self.sessions: Dict[str, ClientSession] = {}
+        self.exit_stacks: Dict[str, AsyncExitStack] = {}
 
     async def connect_sse(self, server_url: str, server_id: str = "") -> None:
         """Connect to an MCP server using SSE transport."""
@@ -251,9 +256,12 @@ class MCPClients(ToolCollection):
                     if exit_stack:
                         try:
                             await exit_stack.aclose()
-                        except RuntimeError as e:
-                            if "cancel scope" in str(e).lower():
-                                logger.warning(
+                        except (RuntimeError, asyncio.CancelledError) as e:
+                            if (
+                                isinstance(e, asyncio.CancelledError)
+                                or "cancel scope" in str(e).lower()
+                            ):
+                                logger.debug(
                                     f"Cancel scope error during disconnect from {server_id}, continuing with cleanup: {e}"
                                 )
                             else:
@@ -271,6 +279,18 @@ class MCPClients(ToolCollection):
                     }
                     self.tools = tuple(self.tool_map.values())
                     logger.info(f"Disconnected from MCP server {server_id}")
+                except asyncio.CancelledError as e:
+                    logger.debug(
+                        f"MCP disconnect cancelled from server {server_id}, continuing with cleanup: {e}"
+                    )
+                    self.sessions.pop(server_id, None)
+                    self.exit_stacks.pop(server_id, None)
+                    self.tool_map = {
+                        key: tool
+                        for key, tool in self.tool_map.items()
+                        if tool.server_id != server_id
+                    }
+                    self.tools = tuple(self.tool_map.values())
                 except Exception as e:
                     logger.error(f"Error disconnecting from server {server_id}: {e}")
         else:

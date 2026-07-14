@@ -5,6 +5,7 @@ from typing import Any, List, Optional, Union
 from pydantic import Field
 
 from app.agent.react import ReActAgent
+from app.agent.task_control import TaskController
 from app.exceptions import TokenLimitExceeded
 from app.logger import logger
 from app.prompt.toolcall import NEXT_STEP_PROMPT, SYSTEM_PROMPT
@@ -34,6 +35,13 @@ class ToolCallAgent(ReActAgent):
     active_tool_names: set[str] = Field(default_factory=set, exclude=True)
     _current_base64_image: Optional[str] = None
     _current_image_mime_type: Optional[str] = None
+    finish_status: Optional[str] = None
+    finish_reason: Optional[str] = None
+    final_answer: Optional[str] = None
+    task_controller: TaskController = Field(default_factory=TaskController)
+    max_context_chars: int = 120000
+    keep_recent_messages: int = 24
+    _termination_rejection: Optional[str] = None
 
     max_steps: int = 30
     max_observe: Optional[Union[int, bool]] = None
@@ -42,11 +50,123 @@ class ToolCallAgent(ReActAgent):
         """Return the tool schemas exposed to the LLM for the current step."""
         return self.available_tools.to_params()
 
+    @staticmethod
+    def _message_text_size(message: Message) -> int:
+        return len(message.content or "") + len(message.base64_image or "")
+
+    @staticmethod
+    def _compact_text(value: str, limit: int) -> str:
+        text = value or ""
+        if len(text) <= limit:
+            return text
+        head = int(limit * 0.6)
+        tail = max(0, limit - head)
+        return (
+            text[:head]
+            + "\n\n...[observation compacted; middle omitted]...\n\n"
+            + text[-tail:]
+        )
+
+    @staticmethod
+    def _history_line(message: Message) -> str:
+        role = getattr(message.role, "value", message.role)
+        content = " ".join((message.content or "").split())
+        if message.tool_calls:
+            names = ", ".join(call.function.name for call in message.tool_calls)
+            prefix = f"assistant tool calls: {names}"
+        elif role == "tool":
+            prefix = f"tool {message.name or 'unknown'}"
+        else:
+            prefix = str(role)
+        return f"- {prefix}: {content[:700]}".rstrip()
+
+    def _compact_memory_if_needed(self) -> None:
+        messages = self.memory.messages
+        if not messages:
+            return
+
+        # Old screenshots are expensive and cease to be actionable after the page
+        # changes. Keep only the newest visual observations.
+        for message in messages[:-8]:
+            if message.base64_image:
+                message.base64_image = None
+                message.image_mime_type = None
+
+        total_chars = sum(self._message_text_size(message) for message in messages)
+        if total_chars <= self.max_context_chars:
+            return
+
+        first_user_index = next(
+            (
+                index
+                for index, message in enumerate(messages)
+                if getattr(message.role, "value", message.role) == "user"
+            ),
+            None,
+        )
+        pinned_indices = {
+            index
+            for index, message in enumerate(messages)
+            if getattr(message.role, "value", message.role) == "system"
+        }
+        if first_user_index is not None:
+            pinned_indices.add(first_user_index)
+
+        tail_start = max(0, len(messages) - self.keep_recent_messages)
+        while (
+            tail_start < len(messages)
+            and getattr(messages[tail_start].role, "value", messages[tail_start].role)
+            == "tool"
+        ):
+            tail_start += 1
+
+        old_messages = [
+            message
+            for index, message in enumerate(messages[:tail_start])
+            if index not in pinned_indices
+        ]
+        history_lines = [self._history_line(message) for message in old_messages[-40:]]
+        compacted_history = Message.user_message(
+            "COMPACTED EXECUTION HISTORY (facts and tool outcomes only):\n"
+            + ("\n".join(history_lines) if history_lines else "- No retained details.")
+        )
+
+        rebuilt = [
+            messages[index] for index in sorted(pinned_indices) if index < tail_start
+        ]
+        rebuilt.append(compacted_history)
+        rebuilt.extend(messages[tail_start:])
+        self.memory.messages = rebuilt
+        logger.info(
+            "Compacted agent memory from {} to {} messages ({} input chars before compaction)",
+            len(messages),
+            len(rebuilt),
+            total_chars,
+        )
+
+    def _step_prompt(self) -> Optional[Message]:
+        parts = []
+        progress = self.task_controller.progress_text()
+        if progress:
+            parts.append(progress)
+        if self.task_controller.last_recovery_directive:
+            parts.append(self.task_controller.last_recovery_directive)
+            self.task_controller.last_recovery_directive = ""
+        if self.next_step_prompt:
+            parts.append(self.next_step_prompt)
+        if not parts:
+            return None
+        return Message.user_message("\n\n".join(parts))
+
     async def think(self) -> bool:
         """Process current state and decide next actions using tools"""
-        if self.next_step_prompt:
-            user_msg = Message.user_message(self.next_step_prompt)
-            self.messages += [user_msg]
+        self._compact_memory_if_needed()
+        request_messages = list(self.messages)
+        step_prompt = self._step_prompt()
+        if step_prompt:
+            # The control prompt is transient. Persisting the same text on every
+            # ReAct iteration caused quadratic context growth in long browser runs.
+            request_messages.append(step_prompt)
 
         try:
             tool_params = self.get_tool_params_for_step()
@@ -58,7 +178,7 @@ class ToolCallAgent(ReActAgent):
 
             # Get response with tool options
             response = await self.llm.ask_tool(
-                messages=self.messages,
+                messages=request_messages,
                 system_msgs=(
                     [Message.system_message(self.system_prompt)]
                     if self.system_prompt
@@ -129,6 +249,18 @@ class ToolCallAgent(ReActAgent):
 
             # For 'auto' mode, continue with content if no commands but content exists
             if self.tool_choices == ToolChoice.AUTO and not self.tool_calls:
+                if content:
+                    allowed, rejection = self.task_controller.validate_termination(
+                        "success", evidence_ids=[], explicit=False
+                    )
+                    if allowed:
+                        self.finish_status = "success"
+                        self.final_answer = content.strip()
+                        self.state = AgentState.FINISHED
+                    else:
+                        self.task_controller.last_recovery_directive = (
+                            "COMPLETION GATE: " + rejection
+                        )
                 return bool(content)
 
             return bool(self.tool_calls)
@@ -157,9 +289,12 @@ class ToolCallAgent(ReActAgent):
             self._current_image_mime_type = None
 
             result = await self.execute_tool(command)
+            result = self.task_controller.compact_observation(
+                command.function.name, result
+            )
 
             if self.max_observe:
-                result = result[: self.max_observe]
+                result = self._compact_text(result, int(self.max_observe))
 
             logger.info(
                 f"🎯 Tool '{command.function.name}' completed its mission! Result: {result}"
@@ -175,6 +310,10 @@ class ToolCallAgent(ReActAgent):
             )
             self.memory.add_message(tool_msg)
             results.append(result)
+
+            if self.state == AgentState.FINISHED:
+                logger.info("Terminate accepted; skipping remaining batched tool calls")
+                break
 
         return "\n\n".join(results)
 
@@ -197,20 +336,32 @@ class ToolCallAgent(ReActAgent):
             # Parse arguments
             args = json.loads(command.function.arguments or "{}")
 
+            circuit_breaker_message = self.task_controller.preflight_tool(name, args)
+            if circuit_breaker_message:
+                logger.warning(circuit_breaker_message)
+                return f"Error: {circuit_breaker_message}"
+
             # Execute the tool
             logger.info(f"🔧 Activating tool: '{name}'...")
             result = await self.available_tools.execute(name=name, tool_input=args)
 
             # Handle special tools
-            await self._handle_special_tool(name=name, result=result)
+            await self._handle_special_tool(
+                name=name,
+                result=result,
+                tool_input=args,
+            )
+
+            if name.lower() == Terminate().name and self._termination_rejection:
+                rejection = self._termination_rejection
+                self._termination_rejection = None
+                return f"Error: Termination gate rejected success. {rejection}"
 
             # Check if result is a ToolResult with base64_image
             if hasattr(result, "base64_image") and result.base64_image:
                 # Store the base64_image for later use in tool_message
                 self._current_base64_image = result.base64_image
-                self._current_image_mime_type = getattr(
-                    result, "image_mime_type", None
-                )
+                self._current_image_mime_type = getattr(result, "image_mime_type", None)
 
             # Format result for display (standard case)
             observation = (
@@ -218,6 +369,16 @@ class ToolCallAgent(ReActAgent):
                 if result
                 else f"Cmd `{name}` completed with no output"
             )
+
+            recovery_directive = self.task_controller.record_tool_result(
+                name, args, observation
+            )
+            if self.task_controller.last_evidence_receipt:
+                observation = (
+                    f"{observation}\n\n" f"{self.task_controller.last_evidence_receipt}"
+                )
+            if recovery_directive:
+                observation = f"{observation}\n\n{recovery_directive}"
 
             return observation
         except json.JSONDecodeError:
@@ -235,6 +396,27 @@ class ToolCallAgent(ReActAgent):
         """Handle special tool execution and state changes"""
         if not self._is_special_tool(name):
             return
+
+        if name.lower() == Terminate().name:
+            tool_input = kwargs.get("tool_input") or {}
+            if isinstance(tool_input, dict):
+                status = tool_input.get("status")
+                allowed, rejection = self.task_controller.validate_termination(
+                    status,
+                    evidence_ids=tool_input.get("evidence_ids"),
+                    explicit=True,
+                    reason=tool_input.get("reason", ""),
+                )
+                if not allowed:
+                    self._termination_rejection = rejection
+                    logger.warning(f"Termination gate rejected success: {rejection}")
+                    return
+
+                self.finish_status = status
+                self.finish_reason = tool_input.get("reason")
+                final_answer = tool_input.get("final_answer")
+                if isinstance(final_answer, str) and final_answer.strip():
+                    self.final_answer = final_answer.strip()
 
         if self._should_finish_execution(name=name, result=result, **kwargs):
             # Set agent state to finished
@@ -266,8 +448,27 @@ class ToolCallAgent(ReActAgent):
                     )
         logger.info(f"✨ Cleanup complete for agent '{self.name}'.")
 
-    async def run(self, request: Optional[str] = None) -> str:
+    async def run(
+        self,
+        request: Optional[str] = None,
+        *,
+        task_objective: Optional[str] = None,
+    ) -> str:
         """Run the agent with cleanup when done."""
+        objective = task_objective if task_objective is not None else request
+        if not objective:
+            objective = next(
+                (
+                    message.content
+                    for message in self.memory.messages
+                    if getattr(message.role, "value", message.role) == "user"
+                    and message.content
+                ),
+                "",
+            )
+        guide = self.task_controller.initialize(objective or "")
+        if guide:
+            self.memory.add_message(Message.system_message(guide))
         try:
             return await super().run(request)
         finally:

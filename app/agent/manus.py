@@ -71,7 +71,7 @@ class Manus(ToolCallAgent):
     system_prompt: str = SYSTEM_PROMPT.format(directory=config.workspace_root)
     next_step_prompt: str = NEXT_STEP_PROMPT
 
-    max_observe: int = 10000
+    max_observe: int = 30000
     max_steps: int = 20
 
     # MCP clients for remote tool access
@@ -98,6 +98,7 @@ class Manus(ToolCallAgent):
     _initialized: bool = False
 
     latest_ref_hints: list[str] = Field(default_factory=list)
+
     @model_validator(mode="after")
     def initialize_helper(self) -> "Manus":
         """Initialize basic components synchronously."""
@@ -207,8 +208,15 @@ class Manus(ToolCallAgent):
             self._initialized = False
 
     def get_tool_params_for_step(self) -> List[dict]:
-        """Expose all currently available tools to the LLM."""
-        return [tool.to_param() for tool in self.available_tools.tools]
+        """Expose tools selected by the task-level capability router."""
+        allowed_names = self.task_controller.allowed_tool_names(
+            tool.name for tool in self.available_tools.tools
+        )
+        return [
+            tool.to_param()
+            for tool in self.available_tools.tools
+            if tool.name in allowed_names
+        ]
 
     def _user_text(self) -> str:
         parts = []
@@ -220,7 +228,9 @@ class Manus(ToolCallAgent):
 
     @staticmethod
     def _is_snapshot_ref(target: object) -> bool:
-        return isinstance(target, str) and bool(SNAPSHOT_REF_TARGET_RE.fullmatch(target))
+        return isinstance(target, str) and bool(
+            SNAPSHOT_REF_TARGET_RE.fullmatch(target)
+        )
 
     def _task_needs_comment_interaction(self) -> bool:
         text = self._user_text().lower()
@@ -270,7 +280,51 @@ class Manus(ToolCallAgent):
         return None
 
     def _guard_playwright_command(self, tool_name: str, args: dict) -> Optional[str]:
+        if tool_name == "mcp_playwright_browser_run_code_unsafe":
+            script = str(args.get("code") or "")
+            if re.search(r"locator\([^)]*\[ref=['\"]", script):
+                return (
+                    "Error: Snapshot refs are Playwright MCP virtual identifiers, not "
+                    "DOM attributes. Do not use CSS selectors such as `[ref=...]` "
+                    "inside browser_run_code_unsafe. Pass the pure ref to the normal "
+                    "browser tool, or use a real DOM locator."
+                )
+            if "editor.type(code" in script and "\\n" in script:
+                return (
+                    "Error: Do not keyboard-type multiline source code into a browser "
+                    "code editor; auto-indentation can corrupt the program. Use the "
+                    "editor API such as CodeMirror.setValue(code), Monaco model "
+                    "setValue(code), or upload the source file."
+                )
         return self._guard_ref_first_interaction(tool_name, args)
+
+    @staticmethod
+    def _normalize_snapshot_targets(tool_name: str, args: dict) -> dict:
+        if tool_name not in {
+            "mcp_playwright_browser_click",
+            "mcp_playwright_browser_type",
+            "mcp_playwright_browser_fill_form",
+        }:
+            return args
+
+        normalized = dict(args)
+
+        def pure_ref(target: object) -> object:
+            if not isinstance(target, str):
+                return target
+            match = SNAPSHOT_REF_RE.search(target)
+            return match.group(1) if match else target
+
+        if "target" in normalized:
+            normalized["target"] = pure_ref(normalized["target"])
+        if tool_name == "mcp_playwright_browser_fill_form":
+            normalized["fields"] = [
+                {**field, "target": pure_ref(field.get("target"))}
+                if isinstance(field, dict)
+                else field
+                for field in normalized.get("fields") or []
+            ]
+        return normalized
 
     @staticmethod
     def _contains_cjk(text: str) -> bool:
@@ -286,7 +340,9 @@ class Manus(ToolCallAgent):
         for block in CJK_TEXT_RE.findall(text):
             if len(block) < size:
                 continue
-            grams.update(block[index : index + size] for index in range(len(block) - size + 1))
+            grams.update(
+                block[index : index + size] for index in range(len(block) - size + 1)
+            )
         return grams
 
     def _query_matches_context(self, query: str, context: str) -> bool:
@@ -294,7 +350,10 @@ class Manus(ToolCallAgent):
         normalized_context = self._normalize_query_text(context)
         if not normalized_query or not normalized_context:
             return True
-        if normalized_query in normalized_context or normalized_context in normalized_query:
+        if (
+            normalized_query in normalized_context
+            or normalized_context in normalized_query
+        ):
             return True
 
         query_grams = self._cjk_ngrams(query)
@@ -343,7 +402,9 @@ class Manus(ToolCallAgent):
             return args, None
 
         intended_query = self._extract_intended_search_query()
-        context = "\n".join(part for part in [self._user_text(), self._last_assistant_text()] if part)
+        context = "\n".join(
+            part for part in [self._user_text(), self._last_assistant_text()] if part
+        )
         corrected_params: list[tuple[str, str]] = []
         changed = False
 
@@ -352,8 +413,10 @@ class Manus(ToolCallAgent):
                 corrected_params.append((key, value))
                 continue
 
-            if intended_query and self._contains_cjk(value) and not self._query_matches_context(
-                value, intended_query
+            if (
+                intended_query
+                and self._contains_cjk(value)
+                and not self._query_matches_context(value, intended_query)
             ):
                 logger.warning(
                     "Corrected search URL parameter "
@@ -456,6 +519,21 @@ class Manus(ToolCallAgent):
         except Exception:
             args = {}
 
+        if tool_name == "mcp_playwright_browser_snapshot" and (
+            self.task_controller.requires_luogu_accept
+        ):
+            # Inline snapshots are immediately compacted and avoid a redundant
+            # file-write/read round trip during problem solving.
+            args.pop("filename", None)
+            if self.task_controller.submit_panel_seen:
+                requested_depth = args.get("depth")
+                args["depth"] = max(
+                    requested_depth if isinstance(requested_depth, int) else 0,
+                    12,
+                )
+                args["boxes"] = True
+
+        args = self._normalize_snapshot_targets(tool_name, args)
         args, search_guard_message = self._sanitize_search_navigation(tool_name, args)
         if command and command.function:
             command.function.arguments = json.dumps(args, ensure_ascii=False)

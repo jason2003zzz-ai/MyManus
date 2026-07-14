@@ -3,23 +3,30 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MyManus Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=43" />
+    <meta name="theme-color" content="#f6f7fb" />
+    <title>MyManus · Agent Workspace</title>
+    <link rel="stylesheet" href="/static/styles.css?v=50" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
         <div class="brand">
-          <img src="/assets/logo.jpg?v=mymanus" alt="" />
-          <div>
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 40 40" fill="none">
+              <path d="M10 28V12l10 10 10-10v16" stroke="currentColor" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="m10 12 10 10" stroke="#38bdf8" stroke-width="4.2" stroke-linecap="round" />
+              <path d="m20 22 10-10" stroke="#34d399" stroke-width="4.2" stroke-linecap="round" />
+            </svg>
+          </div>
+          <div class="brand-copy">
             <h1>MyManus</h1>
-            <p id="modelLine">正在读取配置</p>
+            <p>Agent Workspace <span class="brand-separator">/</span> <span id="modelLine">正在读取配置</span></p>
           </div>
         </div>
         <div class="topbar-actions">
           <span id="connectionBadge" class="badge neutral">待命</span>
-          <a class="icon-link" href="/api/status" target="_blank" aria-label="API 状态">
-            <span aria-hidden="true">⌘</span>
+          <a class="icon-link" href="/api/status" target="_blank" aria-label="查看 API 状态" title="查看 API 状态">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10" /></svg>
           </a>
         </div>
       </header>
@@ -27,13 +34,21 @@
       <main class="workspace">
         <aside class="panel prompt-panel">
           <button id="newConversationButton" class="new-chat-button" type="button" aria-label="新对话">
-            <span aria-hidden="true">＋</span>
-            <span>新对话</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+            <span>新建对话</span>
+            <span class="button-hint">⌘ N</span>
           </button>
 
           <form id="runForm">
-            <label for="promptInput">任务</label>
-            <textarea id="promptInput" name="prompt" autocomplete="off" spellcheck="false" placeholder="输入任务"></textarea>
+            <div class="section-heading composer-heading">
+              <div>
+                <span class="eyebrow">TASK</span>
+                <h2>告诉 Manus 要做什么</h2>
+              </div>
+              <span class="shortcut-hint">⌘ ↵ 运行</span>
+            </div>
+            <label class="sr-only" for="promptInput">任务描述</label>
+            <textarea id="promptInput" name="prompt" autocomplete="off" spellcheck="false" placeholder="描述你的目标、期望结果和必要约束…"></textarea>
 
             <section id="continuePanel" class="continue-panel" hidden>
               <div>
@@ -44,12 +59,13 @@
 
             <section class="attachments-panel">
               <div class="attachments-header">
-                <h2>附件</h2>
+                <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 12.5-8.2 8.2a5 5 0 0 1-7.1-7.1l9-9a3.5 3.5 0 0 1 5 5l-9 9a2 2 0 1 1-2.8-2.8l8.3-8.3" /></svg>附件</h2>
                 <span id="attachmentsSummary">未上传</span>
               </div>
               <label class="attachment-picker-button" for="attachmentInput">
-                <span>上传文件</span>
-                <span>docx / pdf / xlsx / png / jpg</span>
+                <span class="picker-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 15v4h14v-4" /></svg></span>
+                <span class="picker-copy"><strong>上传文件</strong><small>文档、表格或图片</small></span>
+                <svg class="picker-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
               </label>
               <input
                 id="attachmentInput"
@@ -63,22 +79,23 @@
 
             <section class="skills-panel">
               <div class="skills-header">
-                <h2>Skills</h2>
+                <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" /><circle cx="12" cy="12" r="3.5" /></svg>Skills</h2>
                 <span id="skillsSummary">未选择</span>
               </div>
               <button id="openSkillsButton" class="skill-picker-button" type="button">
-                <span>选择 Skills</span>
-                <span id="skillsSelectedLine">当前未启用</span>
+                <span class="picker-icon skill-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 2-2 7h7l-9 13 2-9H5l8-11Z" /></svg></span>
+                <span class="picker-copy"><strong>能力配置</strong><small id="skillsSelectedLine">当前未启用</small></span>
+                <svg class="picker-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
               </button>
             </section>
 
             <div class="button-row">
               <button id="runButton" class="primary-button" type="submit">
-                <span aria-hidden="true">▶</span>
-                <span>运行</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z" /></svg>
+                <span>开始运行</span>
               </button>
               <button id="cancelButton" class="ghost-button" type="button" disabled>
-                <span aria-hidden="true">■</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg>
                 <span>停止</span>
               </button>
             </div>
@@ -103,8 +120,20 @@
         ></div>
 
         <section class="panel summary-panel">
-          <h2>对话结果</h2>
-          <div id="resultBox" class="result-box">-</div>
+          <header class="panel-header summary-header">
+            <div>
+              <span class="eyebrow">WORKSPACE</span>
+              <h2>对话与结果</h2>
+            </div>
+            <span class="live-indicator"><i></i>实时同步</span>
+          </header>
+          <div id="resultBox" class="result-box">
+            <div class="empty-state">
+              <div class="empty-orbit" aria-hidden="true"><span></span></div>
+              <h3>准备好开始工作</h3>
+              <p>在左侧描述任务，MyManus 会在这里呈现过程与结果。</p>
+            </div>
+          </div>
         </section>
 
         <div
@@ -119,16 +148,18 @@
         <aside class="panel run-panel">
           <div class="run-header">
             <div>
+              <span class="eyebrow">ACTIVITY</span>
               <h2>任务过程</h2>
               <p id="runMeta">尚未开始</p>
             </div>
-            <button id="clearButton" class="icon-button" type="button" aria-label="清空">
-              <span aria-hidden="true">⌫</span>
+            <button id="clearButton" class="icon-button" type="button" aria-label="清空运行过程" title="清空运行过程">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5M14 11v5" /></svg>
             </button>
           </div>
           <section class="event-section">
             <div class="stream-title">
-              <h2>运行过程</h2>
+              <h2><span class="pulse-dot"></span>实时日志</h2>
+              <span>自动滚动</span>
             </div>
             <div id="eventStream" class="event-stream" aria-live="polite"></div>
           </section>
@@ -177,6 +208,6 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=46" type="module"></script>
+    <script src="/static/app.js?v=50" type="module"></script>
   </body>
 </html>
