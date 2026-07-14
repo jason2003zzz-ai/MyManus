@@ -2,6 +2,10 @@
 
 MyManus is a web-first agent based on OpenManus. It keeps the single-agent ReAct execution style, replaces the old browser stack with Microsoft Playwright MCP, and adds task-level capability routing, completion gates, automatic Skill retrieval, and a practical web harness for tasks, history, attachments, and downloadable Word/Excel deliverables.
 
+<p align="center">
+  <img src="docs/images/mymanus-workspace.png" alt="MyManus Web Workspace with single-agent and multi-agent execution modes" width="100%" />
+</p>
+
 ## Features
 
 - Single-agent ReAct workflow with tool calling.
