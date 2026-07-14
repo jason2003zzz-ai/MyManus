@@ -63,6 +63,62 @@ class SearchSettings(BaseModel):
     )
 
 
+class SkillSettings(BaseModel):
+    top_k: int = Field(3, ge=1, le=8, description="Maximum automatically matched Skills")
+    min_score: float = Field(
+        0.08, ge=0.0, le=1.0, description="TF-IDF Skill matching threshold"
+    )
+
+
+class MemorySettings(BaseModel):
+    enabled: bool = Field(True, description="Enable persistent semantic Agent Memory")
+    provider: str = Field(
+        "fastembed",
+        description="Embedding backend: fastembed or openai-compatible",
+    )
+    model: str = Field(
+        "BAAI/bge-small-zh-v1.5",
+        description="Dense embedding model used for long-term Agent Memory retrieval",
+    )
+    base_url: Optional[str] = Field(
+        None, description="Optional OpenAI-compatible embeddings endpoint"
+    )
+    api_key: Optional[str] = Field(
+        None, description="Optional embeddings API key; prefer api_key_env"
+    )
+    api_key_env: str = Field(
+        "OPENAI_API_KEY", description="Environment variable containing the API key"
+    )
+    dimensions: Optional[int] = Field(
+        None, description="Optional output dimensions for compatible embedding models"
+    )
+    top_k: int = Field(3, ge=1, le=8, description="Maximum recalled Memory records")
+    min_score: float = Field(
+        0.5, ge=-1.0, le=1.0, description="Memory cosine similarity threshold"
+    )
+    fallback_to_sparse: bool = Field(
+        True, description="Use keyword recall when the embedding backend is unavailable"
+    )
+    max_content_chars: int = Field(
+        12000, ge=1000, le=40000, description="Maximum embedded text per Memory record"
+    )
+    max_records: int = Field(
+        500, ge=10, le=10000, description="Maximum persistent long-term memories"
+    )
+    storage_path: str = Field(
+        ".memory/memories.json",
+        description="Long-term Memory records path relative to workspace",
+    )
+    cache_path: str = Field(
+        ".cache/memory-embeddings.json",
+        description="Memory embedding index path relative to workspace",
+    )
+    model_cache_dir: str = Field(
+        ".cache/fastembed",
+        description="FastEmbed model cache directory relative to workspace",
+    )
+
+
 class BrowserSettings(BaseModel):
     headless: bool = Field(False, description="Whether to run browser in headless mode")
     disable_security: bool = Field(
@@ -204,6 +260,12 @@ class AppConfig(BaseModel):
     search_config: Optional[SearchSettings] = Field(
         None, description="Search configuration"
     )
+    skill_config: SkillSettings = Field(
+        default_factory=SkillSettings, description="Lightweight Skill matching configuration"
+    )
+    memory_config: MemorySettings = Field(
+        default_factory=MemorySettings, description="Long-term Agent Memory configuration"
+    )
     mcp_config: Optional[MCPSettings] = Field(None, description="MCP configuration")
     daytona_config: Optional[DaytonaSettings] = Field(
         None, description="Daytona configuration"
@@ -305,6 +367,10 @@ class Config:
         search_settings = None
         if search_config:
             search_settings = SearchSettings(**search_config)
+        skill_settings = SkillSettings(**raw_config.get("skills", {}))
+        memory_settings = MemorySettings(
+            **raw_config.get("memory", raw_config.get("embedding", {}))
+        )
         sandbox_config = raw_config.get("sandbox", {})
         if sandbox_config:
             sandbox_settings = SandboxSettings(**sandbox_config)
@@ -336,6 +402,8 @@ class Config:
             "sandbox": sandbox_settings,
             "browser_config": browser_settings,
             "search_config": search_settings,
+            "skill_config": skill_settings,
+            "memory_config": memory_settings,
             "mcp_config": mcp_settings,
             "daytona_config": daytona_settings,
         }
@@ -361,6 +429,14 @@ class Config:
     @property
     def search_config(self) -> Optional[SearchSettings]:
         return self._config.search_config
+
+    @property
+    def skill_config(self) -> SkillSettings:
+        return self._config.skill_config
+
+    @property
+    def memory_config(self) -> MemorySettings:
+        return self._config.memory_config
 
     @property
     def mcp_config(self) -> MCPSettings:

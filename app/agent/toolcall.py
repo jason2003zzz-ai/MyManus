@@ -113,11 +113,9 @@ class ToolCallAgent(ReActAgent):
             pinned_indices.add(first_user_index)
 
         tail_start = max(0, len(messages) - self.keep_recent_messages)
-        while (
-            tail_start < len(messages)
-            and getattr(messages[tail_start].role, "value", messages[tail_start].role)
-            == "tool"
-        ):
+        while tail_start < len(messages) and getattr(
+            messages[tail_start].role, "value", messages[tail_start].role
+        ) == "tool":
             tail_start += 1
 
         old_messages = [
@@ -132,7 +130,9 @@ class ToolCallAgent(ReActAgent):
         )
 
         rebuilt = [
-            messages[index] for index in sorted(pinned_indices) if index < tail_start
+            messages[index]
+            for index in sorted(pinned_indices)
+            if index < tail_start
         ]
         rebuilt.append(compacted_history)
         rebuilt.extend(messages[tail_start:])
@@ -251,7 +251,10 @@ class ToolCallAgent(ReActAgent):
             if self.tool_choices == ToolChoice.AUTO and not self.tool_calls:
                 if content:
                     allowed, rejection = self.task_controller.validate_termination(
-                        "success", evidence_ids=[], explicit=False
+                        "success",
+                        evidence_ids=[],
+                        explicit=False,
+                        final_answer=content,
                     )
                     if allowed:
                         self.finish_status = "success"
@@ -361,7 +364,9 @@ class ToolCallAgent(ReActAgent):
             if hasattr(result, "base64_image") and result.base64_image:
                 # Store the base64_image for later use in tool_message
                 self._current_base64_image = result.base64_image
-                self._current_image_mime_type = getattr(result, "image_mime_type", None)
+                self._current_image_mime_type = getattr(
+                    result, "image_mime_type", None
+                )
 
             # Format result for display (standard case)
             observation = (
@@ -375,7 +380,8 @@ class ToolCallAgent(ReActAgent):
             )
             if self.task_controller.last_evidence_receipt:
                 observation = (
-                    f"{observation}\n\n" f"{self.task_controller.last_evidence_receipt}"
+                    f"{observation}\n\n"
+                    f"{self.task_controller.last_evidence_receipt}"
                 )
             if recovery_directive:
                 observation = f"{observation}\n\n{recovery_directive}"
@@ -406,6 +412,7 @@ class ToolCallAgent(ReActAgent):
                     evidence_ids=tool_input.get("evidence_ids"),
                     explicit=True,
                     reason=tool_input.get("reason", ""),
+                    final_answer=tool_input.get("final_answer", ""),
                 )
                 if not allowed:
                     self._termination_rejection = rejection

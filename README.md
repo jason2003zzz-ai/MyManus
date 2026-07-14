@@ -1,18 +1,79 @@
 # MyManus
 
-MyManus is a web-first agent based on OpenManus. It keeps the single-agent ReAct execution style, replaces the old browser stack with Microsoft Playwright MCP, and adds task-level capability routing, completion gates, automatic Skill retrieval, and a practical web harness for tasks, history, attachments, and downloadable Word/Excel deliverables.
+<p align="center">
+  <strong>A web-native, evidence-aware Agent runtime for real-world long-horizon tasks.</strong>
+</p>
 
-## Features
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python 3.12" />
+  <img src="https://img.shields.io/badge/Execution-Single%20%2B%20Multi--Agent-0F766E" alt="Single and Multi-Agent" />
+  <img src="https://img.shields.io/badge/Browser-Playwright%20MCP-2EAD33?logo=playwright&logoColor=white" alt="Playwright MCP" />
+  <img src="https://img.shields.io/badge/Memory-BGE%20Embedding%20RAG-7C3AED" alt="BGE Embedding RAG" />
+</p>
 
-- Single-agent ReAct workflow with tool calling.
+MyManus is an engineering-focused evolution of OpenManus that transforms a monolithic ReAct loop into a **hierarchical Agent execution system**. It combines a planning coordinator, capability-isolated executor agents, an evidence-aware control plane, semantic long-term memory, and a web workspace into one end-to-end runtime.
+
+The project is designed around a practical question: how can an Agent reliably complete research, browser operation, data analysis, email, coding, and document-delivery tasks that span many tools and many steps? MyManus answers this with explicit planning, professional specialization, verifiable termination, failure recovery, and cross-session experience reuse—not simply a larger prompt.
+
+<p align="center">
+  <img src="docs/images/mymanus-workspace.png" alt="MyManus Web Workspace with single-agent and multi-agent execution modes" width="100%" />
+</p>
+
+## Why MyManus
+
+- **Hierarchical multi-agent orchestration** — a coordinator decomposes complex objectives into dependency-aware work packages, assigns each package to the most suitable executor, maintains progress, and synthesizes a unified final result.
+- **Evidence-aware Agent control plane** — completion is governed by evidence contracts, receipts, target binding, recovery directives, and a Termination Gate instead of relying only on the model's self-reported confidence.
+- **Semantic Agent Memory RAG** — cross-session experience is persisted and recalled with BGE dense embeddings, while retrieval-quality filtering prevents unverified historical answers from contaminating future runs.
+- **Capability isolation** — browser research, general tool execution, and data analysis run in separate executor contexts with explicit tool boundaries, reducing context interference and accidental tool misuse.
+- **Real browser and delivery Harness** — Playwright MCP, multimodal page understanding, Gmail MCP, Office generation, file uploads, task history, continuation, and downloadable artifacts are integrated into the same workflow.
+- **General-purpose reliability improvements** — search snippets are treated as discovery clues rather than final proof; first-party sources, direct page reads, alternate-query recovery, and structured final composition improve long-horizon task quality.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    U["Web Workspace"] --> M{"Execution Mode"}
+    M -->|Single Agent| S["Manus ReAct Runtime"]
+    M -->|Multi-Agent| C["Planning Coordinator"]
+    C --> G["General Executor"]
+    C --> B["Browser Executor"]
+    C --> D["Data Analysis Executor"]
+    G --> R["Shared Result Board"]
+    B --> R
+    D --> R
+    S --> E["Evidence & Termination Gate"]
+    R --> E
+    E --> F["Final Answer / Files / Actions"]
+    MR["Agent Memory RAG"] -. relevant history .-> S
+    MR -. relevant history .-> C
+    SK["Skill Matcher"] -. task capability .-> S
+    SK -. task capability .-> C
+```
+
+| Layer | Baseline path | MyManus extension |
+| --- | --- | --- |
+| Execution | Single ReAct loop | Per-task single/multi-agent switching |
+| Planning | Implicit next-step reasoning | Dependency-aware work packages and centralized coordination |
+| Tool use | Shared context and broad tool access | Role-scoped executors with explicit tool permissions |
+| Browser | Basic browser integration | Playwright MCP, visual understanding, snapshots, recovery and evidence capture |
+| Memory | Current-run context | Persistent cross-session Memory RAG with BGE embeddings |
+| Skills | Manually supplied instructions | Ten reusable Skills with automatic, explainable task matching |
+| Termination | Model-decided completion | Evidence contracts, receipts, target binding and Termination Gate |
+| Product surface | Primarily CLI execution | Web workspace, live activity, history, attachments and artifact delivery |
+
+## Core Capabilities
+
+- Switchable single-agent ReAct and multi-agent execution for every task.
+- Multi-agent coordinator with dependency-aware planning, isolated Browser/Data Analysis/General executors, shared results, and final synthesis.
 - Web UI at `http://127.0.0.1:7788`.
 - Microsoft Playwright MCP browser control with extension mode and vision tools.
 - StepFun / StepSearch MCP integration for web search and page fetching.
 - Gmail MCP integration for mailbox search, reading, drafting, sending, labels, filters, and attachments.
-- Task-level capability routing, evidence receipts, recovery directives, and completion validation.
+- Task-level capability routing, evidence receipts, recovery directives, and a Termination Gate that blocks unsupported completion or premature “not found” answers.
+- Agent Memory RAG backed by BGE dense embeddings, persistent cross-session history, and retrieval-quality filtering.
 - Word `.docx` and Excel `.xlsx` generation tools.
 - Upload support for `docx`, `pdf`, `xlsx`, `png`, `jpg`, and `jpeg`.
-- Custom Skills loaded from `workspace/skills/*/SKILL.md`, with manual selection and automatic RAG retrieval.
+- Ten reusable Skills loaded from `workspace/skills/*/SKILL.md`, with manual selection and lightweight deterministic matching instead of embedding retrieval.
 - Recent task history, continuation context, stop button, and downloadable artifacts.
 
 ## 演示
@@ -82,6 +143,11 @@ Then open:
 http://127.0.0.1:7788
 ```
 
+Choose the execution mode in the left panel before starting a task:
+
+- **Single agent** runs the original direct ReAct loop and is best for focused tasks.
+- **Multi-agent** asks the coordinator to create dependent work packages, assigns them to capability-isolated executors, and composes a final answer from their shared results.
+
 If you installed the package in editable mode, these aliases are also available:
 
 ```bash
@@ -135,7 +201,7 @@ Do not commit these local files:
 - `config/config.toml`
 - `config/mcp.json`
 - `.env`
-- `workspace/`
+- runtime files under `workspace/` (the reusable `workspace/skills/` directory is versioned)
 - `logs/`
 
 Use the example files as templates:
@@ -151,7 +217,11 @@ Skills are stored under:
 workspace/skills/<skill-id>/SKILL.md
 ```
 
-The web UI can create, edit, select, and delete skills. Skills can be selected manually, and relevant unselected skills are automatically retrieved for each task using lightweight local RAG.
+The web UI can create, edit, select, and delete Skills. Skills can be selected manually, while relevant unselected Skills are matched automatically with a lightweight, explainable TF-IDF intent matcher.
+
+## Agent Memory RAG
+
+Cross-session task history is stored locally and retrieved with dense embeddings before a new run. The default configuration uses FastEmbed with `BAAI/bge-small-zh-v1.5`; an OpenAI-compatible embeddings endpoint can also be configured. Unverified negative web-search conclusions are retained for audit but excluded from future retrieval, preventing low-quality historical answers from contaminating later tasks.
 
 ## Attachments
 

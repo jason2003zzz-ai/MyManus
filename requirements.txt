@@ -5,6 +5,7 @@ pyyaml~=6.0.2
 loguru~=0.7.3
 structlog~=25.4.0
 numpy
+fastembed>=0.7.4,<1.0.0
 datasets~=3.4.1
 fastapi>=0.139.0,<1.0.0
 python-multipart>=0.0.20,<1.0.0

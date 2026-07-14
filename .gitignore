@@ -5,8 +5,10 @@ logs/
 # Data
 data/
 
-# Workspace
-workspace/
+# Workspace runtime files are ignored, while reusable Skills remain versioned.
+workspace/*
+!workspace/skills/
+!workspace/skills/**
 
 # Local credentials and machine-specific config
 config/config.toml

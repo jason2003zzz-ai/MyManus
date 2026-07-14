@@ -20,6 +20,31 @@ reasoning_effort = "high"
 [mcp]
 server_reference = "app.mcp.server"
 
+# Lightweight Skill matching does not use embeddings.
+[skills]
+top_k = 3
+min_score = 0.08
+
+# Long-term Agent Memory RAG. The default runs BGE embeddings locally and
+# downloads the model on first use; no additional API key is required.
+[memory]
+enabled = true
+provider = "fastembed"
+model = "BAAI/bge-small-zh-v1.5"
+top_k = 3
+min_score = 0.5
+fallback_to_sparse = true
+max_records = 500
+storage_path = ".memory/memories.json"
+cache_path = ".cache/memory-embeddings.json"
+model_cache_dir = ".cache/fastembed"
+
+# To use an OpenAI-compatible embeddings endpoint instead:
+# provider = "openai-compatible"
+# model = "text-embedding-3-small"
+# base_url = "https://api.openai.com/v1"
+# api_key_env = "OPENAI_API_KEY"
+
 # Optional browser settings used by older local tools. Playwright MCP is configured
 # in config/mcp.json.
 # [browser]

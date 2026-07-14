@@ -423,6 +423,71 @@ form {
   letter-spacing: 0.16em;
 }
 
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin: 0;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.mode-option {
+  position: relative;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.mode-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mode-option span {
+  min-height: 52px;
+  padding: 8px 9px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--muted);
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.mode-option strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.mode-option small {
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 550;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+}
+
+.mode-option input:checked + span {
+  border-color: #b8d8d3;
+  color: var(--accent-strong);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.mode-option input:focus-visible + span {
+  box-shadow: 0 0 0 3px rgba(22, 125, 115, 0.12);
+}
+
+.mode-option:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 label,
 dt {
   color: var(--muted);
@@ -1389,6 +1454,10 @@ select {
 
 .event.log-info .event-kind { color: #76b7ff; }
 .event.agent .event-kind { color: #65d5c3; }
+.event.team_plan .event-kind,
+.event.team_task .event-kind,
+.event.team_agent .event-kind,
+.event.team_summary .event-kind { color: #65d5c3; }
 .event.log-warning .event-kind { color: #e2b96f; }
 .event.log-error .event-kind,
 .event.error .event-kind { color: #f18b94; }

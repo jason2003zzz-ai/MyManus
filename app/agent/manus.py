@@ -98,7 +98,6 @@ class Manus(ToolCallAgent):
     _initialized: bool = False
 
     latest_ref_hints: list[str] = Field(default_factory=list)
-
     @model_validator(mode="after")
     def initialize_helper(self) -> "Manus":
         """Initialize basic components synchronously."""
@@ -228,9 +227,7 @@ class Manus(ToolCallAgent):
 
     @staticmethod
     def _is_snapshot_ref(target: object) -> bool:
-        return isinstance(target, str) and bool(
-            SNAPSHOT_REF_TARGET_RE.fullmatch(target)
-        )
+        return isinstance(target, str) and bool(SNAPSHOT_REF_TARGET_RE.fullmatch(target))
 
     def _task_needs_comment_interaction(self) -> bool:
         text = self._user_text().lower()
@@ -340,9 +337,7 @@ class Manus(ToolCallAgent):
         for block in CJK_TEXT_RE.findall(text):
             if len(block) < size:
                 continue
-            grams.update(
-                block[index : index + size] for index in range(len(block) - size + 1)
-            )
+            grams.update(block[index : index + size] for index in range(len(block) - size + 1))
         return grams
 
     def _query_matches_context(self, query: str, context: str) -> bool:
@@ -350,10 +345,7 @@ class Manus(ToolCallAgent):
         normalized_context = self._normalize_query_text(context)
         if not normalized_query or not normalized_context:
             return True
-        if (
-            normalized_query in normalized_context
-            or normalized_context in normalized_query
-        ):
+        if normalized_query in normalized_context or normalized_context in normalized_query:
             return True
 
         query_grams = self._cjk_ngrams(query)
@@ -402,9 +394,7 @@ class Manus(ToolCallAgent):
             return args, None
 
         intended_query = self._extract_intended_search_query()
-        context = "\n".join(
-            part for part in [self._user_text(), self._last_assistant_text()] if part
-        )
+        context = "\n".join(part for part in [self._user_text(), self._last_assistant_text()] if part)
         corrected_params: list[tuple[str, str]] = []
         changed = False
 
@@ -413,10 +403,8 @@ class Manus(ToolCallAgent):
                 corrected_params.append((key, value))
                 continue
 
-            if (
-                intended_query
-                and self._contains_cjk(value)
-                and not self._query_matches_context(value, intended_query)
+            if intended_query and self._contains_cjk(value) and not self._query_matches_context(
+                value, intended_query
             ):
                 logger.warning(
                     "Corrected search URL parameter "

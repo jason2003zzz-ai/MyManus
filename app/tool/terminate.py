@@ -1,5 +1,5 @@
-from app.exceptions import ToolError
 from app.tool.base import BaseTool
+from app.exceptions import ToolError
 
 
 _TERMINATE_DESCRIPTION = """Terminate the interaction when the request is met OR if the assistant cannot proceed further with the task.
@@ -33,7 +33,7 @@ class Terminate(BaseTool):
                     "Evidence receipt IDs emitted by successful tools that directly "
                     "prove the completion criteria. Use [] only for pure answer tasks."
                 ),
-            },
+            }
         },
         "required": ["status", "final_answer", "evidence_ids"],
     }

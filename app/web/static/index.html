@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#f6f7fb" />
     <title>MyManus · Agent Workspace</title>
-    <link rel="stylesheet" href="/static/styles.css?v=50" />
+    <link rel="stylesheet" href="/static/styles.css?v=51" />
   </head>
   <body>
     <div class="app-shell">
@@ -47,6 +47,17 @@
               </div>
               <span class="shortcut-hint">⌘ ↵ 运行</span>
             </div>
+            <fieldset class="mode-switch" aria-label="执行模式">
+              <legend class="sr-only">执行模式</legend>
+              <label class="mode-option">
+                <input type="radio" name="execution-mode" value="single" checked />
+                <span><strong>单智能体</strong><small>直接执行，适合常规任务</small></span>
+              </label>
+              <label class="mode-option">
+                <input type="radio" name="execution-mode" value="team" />
+                <span><strong>多智能体</strong><small>规划分工，适合复合任务</small></span>
+              </label>
+            </fieldset>
             <label class="sr-only" for="promptInput">任务描述</label>
             <textarea id="promptInput" name="prompt" autocomplete="off" spellcheck="false" placeholder="描述你的目标、期望结果和必要约束…"></textarea>
 
@@ -208,6 +219,6 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=50" type="module"></script>
+    <script src="/static/app.js?v=51" type="module"></script>
   </body>
 </html>

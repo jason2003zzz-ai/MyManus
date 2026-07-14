@@ -10,6 +10,7 @@ const state = {
   attachments: [],
   selectedSkillIds: new Set(),
   editingSkillId: null,
+  mode: "single",
 };
 
 const els = {
@@ -50,11 +51,13 @@ const els = {
   modelLine: document.querySelector("#modelLine"),
   runMeta: document.querySelector("#runMeta"),
   runsList: document.querySelector("#runsList"),
+  modeInputs: document.querySelectorAll("input[name='execution-mode']"),
   columnResizers: document.querySelectorAll(".col-resizer"),
 };
 
 const LAYOUT_KEY = "openmanus-web-layout-v3";
 const SKILLS_KEY = "openmanus-selected-skills-v1";
+const MODE_KEY = "mymanus-execution-mode-v1";
 const DEFAULT_LAYOUT = {
   prompt: 330,
   run: 460,
@@ -76,6 +79,34 @@ const TERMINAL_STATUSES = new Set(["completed", "error", "cancelled", "step_limi
 function setBadge(text, kind = "neutral") {
   els.badge.textContent = text;
   els.badge.className = `badge ${kind}`;
+}
+
+function setExecutionMode(mode, persist = true) {
+  state.mode = mode === "team" ? "team" : "single";
+  for (const input of els.modeInputs) {
+    input.checked = input.value === state.mode;
+  }
+  if (persist) {
+    try {
+      window.localStorage.setItem(MODE_KEY, state.mode);
+    } catch {
+      // Local storage is optional; the selected mode still works for this session.
+    }
+  }
+}
+
+function setModeInputsDisabled(disabled) {
+  for (const input of els.modeInputs) input.disabled = disabled;
+}
+
+function loadExecutionMode() {
+  let mode = "single";
+  try {
+    mode = window.localStorage.getItem(MODE_KEY) || mode;
+  } catch {
+    // Keep the default mode.
+  }
+  setExecutionMode(mode, false);
 }
 
 function formatTime(value) {
@@ -650,6 +681,26 @@ function statusLabel(status) {
   return labels[status] || status || "-";
 }
 
+function roleLabel(role) {
+  const labels = {
+    general: "通用执行者",
+    browser: "浏览器执行者",
+    data: "数据分析执行者",
+  };
+  return labels[role] || role || "执行者";
+}
+
+function teamStatusLabel(status) {
+  const labels = {
+    running: "执行中",
+    completed: "已完成",
+    partial: "部分完成",
+    failed: "失败",
+    blocked: "已阻塞",
+  };
+  return labels[status] || status || "任务";
+}
+
 function renderConversation(conversation) {
   if (!conversation.length) {
     setResult();
@@ -706,6 +757,7 @@ async function showRun(runId, options = {}) {
   state.currentRunId = detail.id;
   state.status = detail.status || state.status;
   state.parentRunId = TERMINAL_STATUSES.has(detail.status) ? detail.id : null;
+  setExecutionMode(detail.mode || "single");
   clearProcessStreams();
   els.runMeta.textContent = `#${detail.id}`;
   setConversation(detail.conversation && detail.conversation.length ? detail.conversation : [detail]);
@@ -718,11 +770,13 @@ async function showRun(runId, options = {}) {
 
   if (TERMINAL_STATUSES.has(detail.status)) {
     state.running = false;
+    setModeInputsDisabled(false);
     els.runButton.disabled = false;
     els.cancelButton.disabled = true;
     disconnectRunStream();
   } else {
     state.running = true;
+    setModeInputsDisabled(true);
     els.runButton.disabled = true;
     els.cancelButton.disabled = false;
     setBadge(detail.status === "running" ? "运行中" : "排队", "running");
@@ -743,6 +797,7 @@ async function startNewConversation(options = {}) {
   state.forceNewConversation = true;
   state.running = false;
   state.status = "idle";
+  setModeInputsDisabled(false);
   state.attachments = [];
   els.runButton.disabled = false;
   els.cancelButton.disabled = true;
@@ -912,8 +967,16 @@ function eventTitle(event) {
   if (event.type === "status") return `状态 · ${event.status}`;
   if (event.type === "log") return `日志 · ${event.level || "INFO"}`;
   if (event.type === "tools") return "工具";
-  if (event.type === "skill_rag") return "Skill RAG";
+  if (event.type === "skill_match") return "Skill 匹配";
+  if (event.type === "memory_rag") return "Agent Memory RAG";
   if (event.type === "agent") return `${event.agent || "Agent"} · ${event.status || ""}`;
+  if (event.type === "mode") return "执行模式";
+  if (event.type === "team_plan") return "团队计划";
+  if (event.type === "team_agent") return `${roleLabel(event.role)} · 工具就绪`;
+  if (event.type === "team_task") {
+    return `${roleLabel(event.role)} · ${teamStatusLabel(event.status)}`;
+  }
+  if (event.type === "team_summary") return "团队汇总";
   if (event.type === "result") return "执行摘要";
   if (event.type === "error") return "错误";
   if (event.type === "context") return "上下文";
@@ -927,14 +990,39 @@ function eventBody(event) {
   if (event.type === "tools") {
     return `已加载 ${event.count} 个工具，其中 Playwright MCP ${event.browser_tools} 个，Gmail MCP ${event.gmail_tools || 0} 个`;
   }
-  if (event.type === "skill_rag") {
+  if (event.type === "skill_match") {
     if (!event.count) return event.message || "未自动召回 Skill";
     const names = (event.matches || [])
       .map((match) => `${match.name || match.id} (${Number(match.score || 0).toFixed(3)})`)
       .join("、");
-    return `自动召回 ${event.count} 个 Skill：${names}`;
+    return `关键词匹配 ${event.count} 个 Skill：${names}`;
+  }
+  if (event.type === "memory_rag") {
+    if (!event.count) return event.message || "未召回相关历史";
+    const memories = (event.matches || [])
+      .map((match) => `${match.task || match.run_id} (${Number(match.score || 0).toFixed(3)})`)
+      .join("、");
+    return `语义召回 ${event.count} 条长期记忆：${memories}`;
   }
   if (event.type === "agent") return event.content || "";
+  if (event.type === "mode") {
+    return event.mode === "team" ? "多智能体：规划、分工执行、统一汇总" : "单智能体：Manus 直接执行";
+  }
+  if (event.type === "team_plan") {
+    const tasks = (event.tasks || []).map(
+      (task) => `${task.id} · ${roleLabel(task.role)} · ${task.title}`,
+    );
+    return [event.summary, ...tasks].filter(Boolean).join("\n");
+  }
+  if (event.type === "team_agent") {
+    return `${event.agent || roleLabel(event.role)} 已加载 ${event.tool_count || 0} 个角色内工具`;
+  }
+  if (event.type === "team_task") return event.content || event.title || "";
+  if (event.type === "team_summary") {
+    const partial = event.partial ? `，部分完成 ${event.partial}` : "";
+    const result = `已完成 ${event.completed || 0} / ${event.total || 0} 个任务${partial}`;
+    return event.success ? result : `${result}，最终答案包含未完成项说明`;
+  }
   if (event.type === "result") return event.content || "";
   if (event.type === "error") return event.message || "";
   if (event.type === "context") return `基于上一轮 #${event.parent_run_id} 继续`;
@@ -998,34 +1086,40 @@ function updateRunStatus(status) {
   }
   if (status === "queued" || status === "waiting" || status === "running") {
     state.running = true;
+    setModeInputsDisabled(true);
     els.runButton.disabled = true;
     els.cancelButton.disabled = false;
     setBadge(status === "running" ? "运行中" : "排队", "running");
   } else if (status === "cancelling") {
     state.running = true;
+    setModeInputsDisabled(true);
     els.runButton.disabled = true;
     els.cancelButton.disabled = true;
     setBadge("停止中", "running");
   } else if (status === "completed") {
     state.running = false;
+    setModeInputsDisabled(false);
     els.runButton.disabled = false;
     els.cancelButton.disabled = true;
     setBadge("完成", "done");
     refreshStatus();
   } else if (status === "cancelled") {
     state.running = false;
+    setModeInputsDisabled(false);
     els.runButton.disabled = false;
     els.cancelButton.disabled = true;
     setBadge("已停止", "neutral");
     refreshStatus();
   } else if (status === "step_limit") {
     state.running = false;
+    setModeInputsDisabled(false);
     els.runButton.disabled = false;
     els.cancelButton.disabled = true;
     setBadge("步数耗尽", "error");
     refreshStatus();
   } else if (status === "error") {
     state.running = false;
+    setModeInputsDisabled(false);
     els.runButton.disabled = false;
     els.cancelButton.disabled = true;
     setBadge("错误", "error");
@@ -1074,9 +1168,11 @@ async function startRun(event) {
   clearProcessStreams();
   setBadge("启动中", "running");
   els.runButton.disabled = true;
+  setModeInputsDisabled(true);
 
   const requestBody = {
     prompt,
+    mode: state.mode,
     skill_ids: [...state.selectedSkillIds],
     attachment_ids: state.attachments.map((item) => item.id),
   };
@@ -1093,6 +1189,7 @@ async function startRun(event) {
   if (!response.ok) {
     const text = await response.text();
     els.runButton.disabled = false;
+    setModeInputsDisabled(false);
     setBadge("错误", "error");
     setResult(text);
     return;
@@ -1232,7 +1329,8 @@ function renderRuns(runs) {
     title.textContent = compactText(run.prompt, 64);
 
     const meta = document.createElement("span");
-    meta.textContent = `${statusLabel(run.status)} · ${formatTime(run.updated_at)}`;
+    const mode = run.mode === "team" ? "多智能体" : "单智能体";
+    meta.textContent = `${mode} · ${statusLabel(run.status)} · ${formatTime(run.updated_at)}`;
 
     const deleteButton = document.createElement("button");
     deleteButton.className = "run-item-delete";
@@ -1276,6 +1374,11 @@ async function refreshStatus() {
 }
 
 els.form.addEventListener("submit", startRun);
+for (const input of els.modeInputs) {
+  input.addEventListener("change", () => {
+    if (input.checked) setExecutionMode(input.value);
+  });
+}
 els.cancelButton.addEventListener("click", cancelRun);
 els.newConversationButton.addEventListener("click", () => startNewConversation());
 els.clearRunsButton.addEventListener("click", deleteAllRuns);
@@ -1307,6 +1410,7 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+loadExecutionMode();
 loadSelectedSkillIds();
 initResizableLayout();
 updateSkillsSummary();
